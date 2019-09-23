@@ -250,9 +250,29 @@ for host in $hosts ;do
         for x in $state_list; do
             echo "$host/TO-SYNC/$x" >> ${state_change_log}
         done
+        rm $logdir/$host/ok-checks.log
     fi
+
+    if [[ ! -s $logdir/$host/fail-checks.log ]] ; then
+        rm $logdir/$host/fail-checks.log
+    fi
+
+    if [[ -z $(grep -E -v 'OK|FAILED' $logdir/$host/md5-checks.log) ]] ; then
+        rm $logdir/$host/md5-checks.log
+    fi
+
     popd > /dev/null 2>&4
 done
+
+if [[ -s ${logdir}/mv.log ]] ; then
+    rm ${logdir}/mv.log
+fi
+
+rmdir ${logdir}/${host} 2>/dev/null
+sts = ${?}
+if [[ ${sts}!=0 ]]; then
+    echo "$PROG: rmidir failed to remove ${logdir}/${host} - status ${sts}" &>4
+fi
 
 # change the state of the tarballs on remote
 if [ -s ${state_change_log} ] ;then
