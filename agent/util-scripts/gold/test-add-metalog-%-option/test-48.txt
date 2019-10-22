@@ -1,0 +1,11 @@
++++ Running test-48 test-add-metalog-%-option 
+--- Finished test-48 test-add-metalog-%-option (status=0)
++++ pbench tree state
+/var/tmp/pbench-test-utils/pbench
+/var/tmp/pbench-test-utils/pbench/metadata.log
+--- pbench tree state
++++ metadata.log file contents
+/var/tmp/pbench-test-utils/pbench/metadata.log:[run]
+/var/tmp/pbench-test-utils/pbench/metadata.log:percent = 30%%
+/var/tmp/pbench-test-utils/pbench/metadata.log:
+--- metadata.log file contents

@@ -259,6 +259,7 @@ declare -A tools=(
     [test-45]="pbench-register-tool"
     [test-46]="pbench-register-tool"
     [test-47]="pbench-register-tool"
+    [test-48]="test-add-metalog-%-option"
 )
 
 declare -A options=(
