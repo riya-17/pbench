@@ -3,6 +3,7 @@
 +++ pbench tree state
 /var/tmp/pbench-test-utils/pbench
 /var/tmp/pbench-test-utils/pbench/metadata.log
+/var/tmp/pbench-test-utils/pbench/tmp
 --- pbench tree state
 +++ metadata.log file contents
 /var/tmp/pbench-test-utils/pbench/metadata.log:[run]

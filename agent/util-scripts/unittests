@@ -361,6 +361,7 @@ declare -A pre_hooks=(
     [test-45]='mkdir ${_testdir}/tmp; printf -- "# good list\none.example.com\ntwo.example.com,labelTwo\n\nthree.example.com\n" > ${_testdir}/tmp/remotes.lis'
     [test-46]='mkdir ${_testdir}/tmp; printf -- "# bad list\none.example.com\ntwo.example.com,labelTwo\n\nthree.example.com,labelThree,junk\n" > ${_testdir}/tmp/remotes.lis'
     [test-47]='mkdir ${_testdir}/tmp; printf -- "# good list with no labels\none.example.com\ntwo.example.com\nthree.example.com\n" > ${_testdir}/tmp/remotes.lis'
+    [test-48]='mkdir ${_testdir}/tmp'
 )
 
 declare -A post_hooks=(
