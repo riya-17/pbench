@@ -10,7 +10,6 @@ jobs:
         - sudo apt-get update
       install:
         - sudo apt-get install python python-pip bc libjson-perl libswitch-perl realpath
-        - sudo pip install configparser configtools
         - sudo apt-get install python-software-properties
         - sudo add-apt-repository ppa:fkrull/deadsnakes -y
         - sudo apt-get update -y -qq
@@ -28,7 +27,6 @@ jobs:
         - PBENCH_UNITTEST_SERVER_MODE=serial
       install:
         - sudo apt-get install realpath
-        - pip install 'configtools<0.4.0' elasticsearch sh boto3
       script: ./server/bin/unittests
 
     - stage: "Dashboard Unit Tests"
