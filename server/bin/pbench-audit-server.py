@@ -6,6 +6,7 @@ import glob
 import time
 import tempfile
 
+from pathlib import Path
 from pbench import PbenchConfig
 from pbench.common.exceptions import BadConfig
 from pbench.server.logger import get_pbench_logger
@@ -220,19 +221,19 @@ class ArchiveHierarchy(Hierarchy):
         return cnt
 
 
-def verify_subdirs(hier, controller, directories):
+def verify_subdirs(hier, controller, states):
     linkdirs = sorted(hier.config.LINKDIRS.split(" "))
-    if directories:
-        for dirent in directories:
+    if states:
+        for state in states:
             if all(
                 [
-                    os.path.exists(os.path.join(hier.path, controller, dirent)),
-                    dirent != "_QUARANTINED",
-                    not dirent.startswith("WONT-INDEX"),
+                    os.path.exists(os.path.join(hier.path, controller, state)),
+                    state != "_QUARANTINED",
+                    not state.startswith("WONT-INDEX"),
                 ]
             ):
-                if dirent not in linkdirs:
-                    hier.add_unexpected_dirs(controller, dirent)
+                if state not in linkdirs:
+                    hier.add_unexpected_dirs(controller, state)
     else:
         hier.set_status(controller, "subdirs")
 
@@ -382,11 +383,29 @@ class ControllerHierarchy(Hierarchy):
         return cnt
 
 
-def verify_controllers(ihier, hier, hierarchy):
-    # cnt = 0
+def verify_hierarchy(ihier, hier, hierarchy):
+
     hierchy = os.path.basename(hierarchy)
-    controllers = glob.iglob(os.path.join(hier.path, "*"))
     users = hier.config.USERS
+
+    if hier.verifylist:
+        if hierchy == "incoming":
+            verify_incoming(ihier, hier.verifylist)
+        elif hierchy == "results":
+            verify_results(ihier, hier)
+        elif os.path.dirname(hierarchy) == users:
+            verify_results(ihier, hier, hierchy)
+        else:
+            print(
+                '${PROG}: verify_controllers bad argument, hierarchy_root="${hierarchy_root}"\n'
+            )
+            return 1
+    return 0
+
+
+def verify_controllers(ihier, hier, hierarchy):
+
+    controllers = glob.iglob(os.path.join(hier.path, "*"))
 
     for controller in controllers:
         if os.path.isdir(controller):
@@ -416,18 +435,8 @@ def verify_controllers(ihier, hier, hierarchy):
                     hier.add_unexpected_cls(controller)
                 hier.add_verifylist(controller)
 
-    if hier.verifylist:
-        if hierchy == "incoming":
-            verify_incoming(ihier, hier.verifylist)
-        elif hierchy == "results":
-            verify_results(ihier, hier)
-        elif os.path.dirname(hierarchy) == users:
-            verify_results(ihier, hier, hierchy)
-        else:
-            print(
-                '${PROG}: verify_controllers bad argument, hierarchy_root="${hierarchy_root}"\n'
-            )
-            return 1
+    if verify_hierarchy(ihier, hier, hierarchy) > 0:
+        return 1
 
     return 0
 
@@ -498,6 +507,26 @@ class IncomingHierarchy(object):
         return 0
 
 
+def verify_tar_dirs(ihier, tarball_dirs, tblist, controller):
+    for tb in tarball_dirs:
+        if tb.endswith("unpack"):
+            tar = tb[:-7]
+            tar = f"{tar}.tar.xz"
+        else:
+            tar = f"{tb}.tar.xz"
+        tarfile = os.path.join(ihier.config.ARCHIVE, controller, tar)
+        if os.path.exists(tarfile):
+            with open(tarfile, "r") as f:
+                try:
+                    file_content = f.read(1)
+                    if file_content:
+                        continue
+                except Exception:
+                    pass
+        else:
+            tblist(controller, os.path.basename(tb))
+
+
 def verify_incoming(ihier, verifylist):
     for controller in verifylist:
         ihier.add_controller(controller)
@@ -531,35 +560,16 @@ def verify_incoming(ihier, verifylist):
                 ihier.add_tarball_links(controller, dirt)
 
         if tarball_dirs:
-            for tb in tarball_dirs:
-                tar = f"{tb}.tar.xz"
-                tarfile = os.path.join(ihier.config.ARCHIVE, controller, tar)
-                if os.path.exists(tarfile):
-                    with open(tarfile, "r") as f:
-                        try:
-                            file_content = f.read(1)
-                            if file_content:
-                                continue
-                        except Exception:
-                            pass
-                else:
-                    ihier.add_invalid_tb_dirs(controller, os.path.basename(tb))
+            verify_tar_dirs(ihier, tarball_dirs, ihier.add_invalid_tb_dirs, controller)
 
         if unpacking_tarball_dirs:
-            for tb in unpacking_tarball_dirs:
-                tar = tb[:-7]
-                tar = f"{tar}.tar.xz"
-                tarfile = os.path.join(ihier.config.ARCHIVE, controller, tar)
-                if os.path.exists(tarfile):
-                    with open(tarfile, "r") as f:
-                        try:
-                            file_content = f.read(1)
-                            if file_content:
-                                continue
-                        except Exception:
-                            pass
-                else:
-                    ihier.add_invalid_unpacking_dirs(controller, os.path.basename(tb))
+            verify_tar_dirs(
+                ihier,
+                unpacking_tarball_dirs,
+                ihier.add_invalid_unpacking_dirs,
+                controller,
+            )
+
     return 0
 
 
@@ -677,6 +687,22 @@ class ResultsHierarchy(object):
         return 0
 
 
+def verify_user_arg(rhier, mdlogcfg, user_arg, controler, path):
+    user = ""
+    try:
+        user = mdlogcfg.get("run", "user")
+    except NoSectionError:
+        pass
+    except NoOptionError:
+        pass
+    if not user:
+        rhier.add_unexpected_user_links(controler, path)
+    elif user_arg != user:
+        rhier.add_wrong_user_links(controler, path)
+
+    return
+
+
 def verify_results(rhier, hier, user_arg=False):
     if user_arg:
         results_hierarchy = os.path.join(rhier.config.USERS, user_arg)
@@ -769,17 +795,8 @@ def verify_results(rhier, hier, user_arg=False):
                                     if prefix != prefix_path:
                                         rhier.add_bad_prefixes(controller, path)
                         if user_arg:
-                            user = ""
-                            try:
-                                user = mdlogcfg.get("run", "user")
-                            except NoSectionError:
-                                pass
-                            except NoOptionError:
-                                pass
-                            if not user:
-                                rhier.add_unexpected_user_links(controler, path)
-                            elif user_arg != user:
-                                rhier.add_wrong_user_links(controler, path)
+                            verify_user_arg(rhier, mdlogcfg, user_arg, controler, path)
+
     return
 
 
@@ -901,20 +918,16 @@ def main():
     except Exception:
         print("os.mkdir: Unable to create destination directory")
         return 1
-    logfile = os.path.join(
-        config.LOGSDIR, "pbench-audit-server", "pbench-audit-server.log"
-    )
+    logfile = Path(config.LOGSDIR, "pbench-audit-server", "pbench-audit-server.log")
     # TEMPORARY addition of error file for the sake of test cases
-    errorfile = os.path.join(
-        config.LOGSDIR, "pbench-audit-server", "pbench-audit-server.error"
-    )
-    with open(errorfile, "w") as f:
+    errorfile = Path(config.LOGSDIR, "pbench-audit-server", "pbench-audit-server.error")
+    with errorfile.open(mode="w") as f:
         pass
     # END
 
     logger.info("start-{}", config.TS)
 
-    with open(logfile, "w") as f:
+    with logfile.open(mode="w") as f:
 
         ahier = ArchiveHierarchy("archive", config.ARCHIVE, config)
         verify_archive(ahier)
