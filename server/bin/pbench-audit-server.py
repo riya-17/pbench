@@ -3,15 +3,21 @@
 import os
 import sys
 import glob
-import time
 import tempfile
 
 from pathlib import Path
-from pbench import PbenchConfig
+from pbench.server import PbenchServerConfig
 from pbench.common.exceptions import BadConfig
-from pbench.server.logger import get_pbench_logger
+from pbench.common.logger import get_pbench_logger
 from pbench.server.report import Report
 from configparser import ConfigParser, NoSectionError, NoOptionError
+from pbench.server.hierarchy import (
+    ArchiveHierarchy,
+    ControllerHierarchy,
+    IncomingHierarchy,
+    ResultsHierarchy,
+    UserHierarchy,
+)
 
 
 _NAME_ = "pbench-audit-server"
@@ -30,212 +36,28 @@ class PbenchMDLogConfig(object):
         return self.conf.get(*args, **kwargs)
 
 
-class DictOfList(object):
-    """Class used to create and add elements to Dictionary
-    """
-
-    def __init__(self):
-        self._dict = {}
-
-    def add_entry(self, key, value):
-        if key in self._dict:
-            self._dict.get(key).append(value)
-        else:
-            self._dict[key] = [value]
+# Archive Hierarchy
 
 
-class Hierarchy(object):
-    def __init__(self, name, path, config):
-        self.name = name
-        self.path = path
-        self.config = config
-
-
-def filepermission(fileperm):
-    stat = ""
-    while fileperm > 0:
-        mod = fileperm % 10
-        permdict = {
-            0: "---",
-            1: "--x",
-            2: "-w-",
-            3: "-wx",
-            4: "r--",
-            5: "r-x",
-            6: "rw-",
-            7: "rwx",
-        }
-        res = permdict[mod]
-        stat = res + stat
-        fileperm = fileperm // 10
-
-    return f"-{stat}"
-
-
-def header(f, stat, timestamp, hierarchy, path):
-    if stat == "start":
-        f.write(f"\n\n{stat}-{timestamp}: {hierarchy} hierarchy: {path}\n")
-    else:
-        f.write(f"\n{stat}-{timestamp}: {hierarchy} hierarchy: {path}\n")
-
-
-class ArchiveHierarchy(Hierarchy):
-    def __init__(self, name, path, config):
-        super().__init__(name, path, config)
-
-        self.controllers = list()
-        self.bad_controllers = list()
-        self.tarballs = list()
-        self.things_to_check = {
-            "unexpected_symlinks": DictOfList(),
-            "unexpected_objects": DictOfList(),
-            "expected_objects": DictOfList(),
-            "unexpected_dirs": DictOfList(),
-            "non_prefixes": DictOfList(),
-            "wrong_prefixes": DictOfList(),
-            "non_prefix_dirs": DictOfList(),
-            "status_indicators": DictOfList(),
-        }
-
-    def add_controller(self, controller):
-        self.controllers.append(controller)
-
-    def add_bad_controller(self, controller):
-        self.bad_controllers.append(controller)
-
-    def add_tarballs(self, controller):
-        self.tarballs.append(controller)
-
-    def add_unexpected_symlinks(self, controller, link):
-        self.things_to_check["unexpected_symlinks"].add_entry(controller, link)
-
-    def add_unexpected_objects(self, controller, obj):
-        self.things_to_check["unexpected_objects"].add_entry(controller, obj)
-
-    def add_unexpected_dirs(self, controller, dirs):
-        self.things_to_check["unexpected_dirs"].add_entry(controller, dirs)
-
-    def add_non_prefixes(self, controller, prefix):
-        self.things_to_check["non_prefixes"].add_entry(controller, prefix)
-
-    def add_wrong_prefixes(self, controller, prefix):
-        self.things_to_check["wrong_prefixes"].add_entry(controller, prefix)
-
-    def set_status(self, controller, subdir):
-        self.things_to_check["status_indicators"].add_entry(controller, subdir)
-
-    def dump(self, f):
-        cnt = 0
-        check_h = False
-        for controller in sorted(self.controllers):
-            check_h = any(
-                [
-                    controller in self.things_to_check[k]._dict
-                    or controller not in self.tarballs
-                    for k in self.things_to_check
-                ]
-            )
-        if check_h or self.bad_controllers:
-            f.write(f"\nstart-{self.config.TS[4:]}: archive hierarchy: {self.path}\n")
-            if self.bad_controllers:
-                f.write("\nBad Controllers:\n")
-                cnt += 1
-                for controller in sorted(self.bad_controllers):
-                    contStatOb = os.stat(controller)
-                    fperm = filepermission(int(oct(contStatOb.st_mode)[-3:]))
-                    mTime = time.strftime(
-                        "%a %b %d %H:%M:%S.0000000000 %Y",
-                        time.gmtime(contStatOb.st_mtime),
-                    )
-                    bname = os.path.basename(controller)
-                    f.write(f"\t{fperm}          0 {mTime} {bname}\n")
-            for controller in sorted(self.controllers):
-                check = any(
-                    [
-                        controller in self.things_to_check[k]._dict
-                        for k in self.things_to_check
-                    ]
-                )
-                if check or controller not in self.tarballs:
-                    f.write(f"\nController: {controller}\n")
-                    if controller in self.things_to_check["unexpected_dirs"]._dict:
-                        f.write(
-                            "\t* Unexpected state directories found in this controller directory:\n"
-                        )
-                        cnt = self.output_format(f, controller, "unexpected_dirs", cnt)
-                    if controller in self.things_to_check["status_indicators"]._dict:
-                        if (
-                            "subdirs"
-                            in self.things_to_check["status_indicators"]._dict[
-                                controller
-                            ]
-                        ):
-                            f.write(
-                                "\t* No state directories found in this controller directory.\n"
-                            )
-                        cnt += 1
-                    if controller in self.things_to_check["unexpected_symlinks"]._dict:
-                        f.write("\t* Unexpected symlinks in controller directory:\n")
-                        cnt = self.output_format(
-                            f, controller, "unexpected_symlinks", cnt
-                        )
-                    if controller in self.things_to_check["unexpected_objects"]._dict:
-                        f.write("\t* Unexpected files in controller directory:\n")
-                        cnt = self.output_format(
-                            f, controller, "unexpected_objects", cnt
-                        )
-                    if controller not in self.tarballs:
-                        f.write(
-                            "\t* No tar ball files found in this controller directory.\n"
-                        )
-                        cnt += 1
-                    if controller in self.things_to_check["non_prefixes"]._dict:
-                        f.write(
-                            "\t* Unexpected file system objects in .prefix directory:\n"
-                        )
-                        cnt = self.output_format(f, controller, "non_prefixes", cnt)
-                    if controller in self.things_to_check["wrong_prefixes"]._dict:
-                        f.write(
-                            "\t* Wrong prefix file names found in /.prefix directory:\n"
-                        )
-                        cnt = self.output_format(f, controller, "wrong_prefixes", cnt)
-                    if controller in self.things_to_check["status_indicators"]._dict:
-                        if (
-                            "prefix_dir"
-                            in self.things_to_check["status_indicators"]._dict[
-                                controller
-                            ]
-                        ):
-                            f.write(
-                                "\t* Prefix directory, .prefix, is not a directory!\n"
-                            )
-            f.write(f"\nend-{self.config.TS[4:]}: archive hierarchy: {self.path}\n")
-        return cnt
-
-    def output_format(self, f, controller, controller_val, cnt):
-        f.write("\t  ++++++++++\n")
-        for val in sorted(self.things_to_check[controller_val]._dict[controller]):
-            f.write(f"\t  {val}\n")
-        f.write("\t  ----------\n")
-        cnt += 1
-        return cnt
-
-
-def verify_subdirs(hier, controller, states):
+def verify_subdirs(hier, controller, directories):
     linkdirs = sorted(hier.config.LINKDIRS.split(" "))
-    if states:
-        for state in states:
+    if directories:
+        for dirent in directories:
             if all(
                 [
-                    os.path.exists(os.path.join(hier.path, controller, state)),
-                    state != "_QUARANTINED",
-                    not state.startswith("WONT-INDEX"),
+                    os.path.exists(os.path.join(hier.path, controller, dirent)),
+                    dirent != "_QUARANTINED",
+                    not dirent.startswith("WONT-INDEX"),
                 ]
             ):
-                if state not in linkdirs:
-                    hier.add_unexpected_dirs(controller, state)
+                if dirent not in linkdirs:
+                    hier.add_unexpected_controllers(
+                        "unexpected_dirs", controller, dirent
+                    )
     else:
-        hier.set_status(controller, "subdirs")
+        hier.add_unexpected_controllers(
+            "subdir_status_indicators", controller, "subdirs"
+        )
 
     return 0
 
@@ -245,7 +67,9 @@ def verify_prefixes(hier, controller):
     if not os.path.exists(prefix_dir):
         return
     if not os.path.isdir(prefix_dir):
-        hier.set_status(controller, "prefix_dir")
+        hier.add_unexpected_controllers(
+            "prefix_status_indicators", controller, "prefix_dir"
+        )
         return
 
     prefixes = glob.iglob(os.path.join(prefix_dir, "*"))
@@ -255,16 +79,19 @@ def verify_prefixes(hier, controller):
         if not base_prefix.startswith("prefix.") and not base_prefix.endswith(
             ".prefix"
         ):
-            hier.add_non_prefixes(controller, base_prefix)
+            hier.add_unexpected_controllers("non_prefixes", controller, base_prefix)
         elif base_prefix.startswith("prefix."):
-            hier.add_wrong_prefixes(controller, base_prefix)
+            hier.add_unexpected_controllers("wrong_prefixes", controller, base_prefix)
 
     return
 
 
+# 'hier' is an object of ArchiveHierarchy class imported from hierarchy.py
 def verify_archive(hier):
     controllers = glob.iglob(os.path.join(hier.path, "*"))
 
+    # Find all the non-directory files at the same level of the controller
+    # directories and report them, and find all the normal controller directories.
     for controller in controllers:
         if os.path.isdir(controller):
             hier.add_controller(os.path.basename(controller))
@@ -278,8 +105,8 @@ def verify_archive(hier):
         if hidden_entries:
             for hid_entries in hidden_entries:
                 if os.path.isfile(hid_entries):
-                    hier.add_unexpected_objects(
-                        controller, os.path.basename(hid_entries)
+                    hier.add_unexpected_controllers(
+                        "unexpected_objects", controller, os.path.basename(hid_entries)
                     )
         controller_subdir = list()
         for item in direct_entries:
@@ -288,7 +115,9 @@ def verify_archive(hier):
                 controller_subdir.append(base_item)
             elif os.path.islink(item):
                 symlink_item = f"{base_item} -> {os.path.realpath(item)}"
-                hier.add_unexpected_symlinks(controller, symlink_item)
+                hier.add_unexpected_controllers(
+                    "unexpected_symlinks", controller, symlink_item
+                )
             elif all(
                 [
                     os.path.isfile(item),
@@ -296,7 +125,9 @@ def verify_archive(hier):
                     not base_item.endswith(".tar.xz.md5"),
                 ]
             ):
-                hier.add_unexpected_objects(controller, base_item)
+                hier.add_unexpected_controllers(
+                    "unexpected_objects", controller, base_item
+                )
             elif os.path.isfile(item) and (
                 base_item.endswith(".tar.xz") or base_item.endswith(".tar.xz.md5")
             ):
@@ -313,198 +144,7 @@ def verify_archive(hier):
     return
 
 
-class ControllerHierarchy(Hierarchy):
-    def __init__(self, name, path, config):
-        super().__init__(name, path, config)
-
-        self.controllers = list()
-        self.controller_check = {
-            "unexpected_objects": list(),
-            "mialist": list(),
-            "unexpected_cls": list(),
-            "empty_cls": list(),
-        }
-        self.verifylist = list()
-
-    def add_controller(self, controller):
-        self.controllers.append(controller)
-
-    def add_unexpected_objects(self, controller):
-        self.controller_check["unexpected_objects"].append(controller)
-
-    def add_mialist(self, controller):
-        self.controller_check["mialist"].append(controller)
-
-    def add_empty_cls(self, controller):
-        self.controller_check["empty_cls"].append(controller)
-
-    def add_unexpected_cls(self, controller):
-        self.controller_check["unexpected_cls"].append(controller)
-
-    def add_verifylist(self, controller):
-        if controller not in self.verifylist:
-            self.verifylist.append(controller)
-
-    def dump(self, f, ihier, chier):
-        cnt = 0
-        check = any([self.controller_check[val] for val in self.controller_check])
-        if check:
-            header(f, "start", self.config.TS[4:], self.name, self.path)
-            if self.controller_check["unexpected_objects"]:
-                f.write("\nUnexpected files found:\n")
-                cnt = self.output_format(
-                    f, self.controller_check["unexpected_objects"], cnt
-                )
-            if self.controller_check["mialist"]:
-                f.write(
-                    f"\nControllers which do not have a {self.config.ARCHIVE} directory:\n"
-                )
-                cnt = self.output_format(f, self.controller_check["mialist"], cnt)
-            if self.controller_check["empty_cls"]:
-                f.write("\nControllers which are empty:\n")
-                cnt = self.output_format(f, self.controller_check["empty_cls"], cnt)
-            if self.controller_check["unexpected_cls"]:
-                f.write("\nControllers which have unexpected objects:\n")
-                cnt = self.output_format(
-                    f, self.controller_check["unexpected_cls"], cnt
-                )
-            if self.verifylist:
-                cnt += ihier.dump(f, 0)
-            header(f, "end", self.config.TS[4:], self.name, self.path)
-        else:
-            if self.verifylist:
-                cnt += ihier.dump(f, 1, chier)
-        return cnt
-
-    def output_format(self, f, verify_tardir, cnt):
-        for controller in sorted(verify_tardir):
-            f.write(f"\t{controller}\n")
-            cnt += 1
-        return cnt
-
-
-def verify_hierarchy(ihier, hier, hierarchy):
-
-    hierchy = os.path.basename(hierarchy)
-    users = hier.config.USERS
-
-    if hier.verifylist:
-        if hierchy == "incoming":
-            verify_incoming(ihier, hier.verifylist)
-        elif hierchy == "results":
-            verify_results(ihier, hier)
-        elif os.path.dirname(hierarchy) == users:
-            verify_results(ihier, hier, hierchy)
-        else:
-            print(
-                '${PROG}: verify_controllers bad argument, hierarchy_root="${hierarchy_root}"\n'
-            )
-            return 1
-    return 0
-
-
-def verify_controllers(ihier, hier, hierarchy):
-
-    controllers = glob.iglob(os.path.join(hier.path, "*"))
-
-    for controller in controllers:
-        if os.path.isdir(controller):
-            hier.add_controller(os.path.basename(controller))
-        else:
-            hier.add_unexpected_objects(os.path.basename(controller))
-
-    if hier.controllers:
-        for controller in hier.controllers:
-            dirent = os.path.join(hier.path, controller)
-            unexpected_dirs = list()
-            if not os.path.isdir(os.path.join(hier.config.ARCHIVE, controller)):
-                hier.add_mialist(os.path.basename(controller))
-            else:
-                if len(os.listdir(dirent)) == 0:
-                    hier.add_empty_cls(controller)
-                    continue
-                else:
-                    direct_entries = glob.iglob(
-                        os.path.join(hier.path, controller, "*")
-                    )
-                    for item in direct_entries:
-                        if not os.path.isdir(item) and not os.path.islink(item):
-                            unexpected_dirs.append(controller)
-
-                if unexpected_dirs:
-                    hier.add_unexpected_cls(controller)
-                hier.add_verifylist(controller)
-
-    if verify_hierarchy(ihier, hier, hierarchy) > 0:
-        return 1
-
-    return 0
-
-
-class IncomingHierarchy(object):
-    def __init__(self, config):
-
-        self.config = config
-        self.controllers = list()
-        self.incoming_check = {
-            "invalid_tb_dirs": DictOfList(),
-            "empty_tarball_dirs": DictOfList(),
-            "invalid_unpacking_dirs": DictOfList(),
-            "tarball_links": DictOfList(),
-        }
-
-    def add_controller(self, controller):
-        self.controllers.append(controller)
-
-    def add_invalid_tb_dirs(self, controller, dirt):
-        self.incoming_check["invalid_tb_dirs"].add_entry(controller, dirt)
-
-    def add_empty_tarball_dirs(self, controller, dirt):
-        self.incoming_check["empty_tarball_dirs"].add_entry(controller, dirt)
-
-    def add_invalid_unpacking_dirs(self, controller, dirt):
-        self.incoming_check["invalid_unpacking_dirs"].add_entry(controller, dirt)
-
-    def add_tarball_links(self, controller, dirt):
-        self.incoming_check["tarball_links"].add_entry(controller, dirt)
-
-    def dump(self, f, stat, hier=False):
-        cnt = 0
-        for verify_tardir in sorted(self.controllers):
-            check = any(
-                [
-                    verify_tardir in self.incoming_check[k]._dict
-                    for k in self.incoming_check
-                ]
-            )
-            if check:
-                cnt = 1
-                if stat == 1:
-                    header(f, "start", self.config.TS[4:], hier.name, hier.path)
-                f.write(f"\nIncoming issues for controller: {verify_tardir}\n")
-                if verify_tardir in self.incoming_check["invalid_tb_dirs"]._dict:
-                    f.write(
-                        f"\tInvalid tar ball directories (not in {self.config.ARCHIVE}):\n"
-                    )
-                    self.output_format(f, verify_tardir, "invalid_tb_dirs")
-                if verify_tardir in self.incoming_check["empty_tarball_dirs"]._dict:
-                    f.write("\tEmpty tar ball directories:\n")
-                    self.output_format(f, verify_tardir, "empty_tarball_dirs")
-                if verify_tardir in self.incoming_check["invalid_unpacking_dirs"]._dict:
-                    f.write("\tInvalid unpacking directories (missing tar ball):\n")
-                    self.output_format(f, verify_tardir, "invalid_unpacking_dirs")
-                if verify_tardir in self.incoming_check["tarball_links"]._dict:
-                    f.write("\tInvalid tar ball links:\n")
-                    self.output_format(f, verify_tardir, "tarball_links")
-                if stat == 1:
-                    header(f, "end", self.config.TS[4:], hier.name, hier.path)
-
-        return cnt
-
-    def output_format(self, f, verify_tardir, dir_val):
-        for val in sorted(self.incoming_check[dir_val]._dict[verify_tardir]):
-            f.write(f"\t\t{val}\n")
-        return 0
+# Incoming Hierarchy
 
 
 def verify_tar_dirs(ihier, tarball_dirs, tblist, controller):
@@ -512,8 +152,10 @@ def verify_tar_dirs(ihier, tarball_dirs, tblist, controller):
         if tb.endswith("unpack"):
             tar = tb[:-7]
             tar = f"{tar}.tar.xz"
+            val = "invalid_unpacking_dirs"
         else:
             tar = f"{tb}.tar.xz"
+            val = "invalid_tb_dirs"
         tarfile = os.path.join(ihier.config.ARCHIVE, controller, tar)
         if os.path.exists(tarfile):
             with open(tarfile, "r") as f:
@@ -524,18 +166,24 @@ def verify_tar_dirs(ihier, tarball_dirs, tblist, controller):
                 except Exception:
                     pass
         else:
-            tblist(controller, os.path.basename(tb))
+            tblist(val, controller, os.path.basename(tb))
 
 
+# 'ihier' is IncomingHierarchy class object
 def verify_incoming(ihier, verifylist):
+
     for controller in verifylist:
         ihier.add_controller(controller)
         direct_entries = glob.iglob(
             os.path.join(ihier.config.INCOMING, controller, "*")
         )
         tarball_dirs, unpacking_tarball_dirs = (list() for i in range(2))
+
         if not os.path.isdir(os.path.join(ihier.config.ARCHIVE, controller)):
+            # Skip incoming controller directories that don't have an $ARCHIVE
+            # directory, handled in another part of the audit.
             continue
+
         for dirent in direct_entries:
             dirt = os.path.basename(dirent)
             if (
@@ -549,7 +197,7 @@ def verify_incoming(ihier, verifylist):
                 and not dirt.endswith(".unpack")
                 and len(os.listdir(dirent)) == 0
             ):
-                ihier.add_empty_tarball_dirs(controller, dirt)
+                ihier.add_tarball_dirs("empty_tarball_dirs", controller, dirt)
             elif (
                 os.path.isdir(dirent)
                 and dirt.endswith(".unpack")
@@ -557,134 +205,20 @@ def verify_incoming(ihier, verifylist):
             ):
                 unpacking_tarball_dirs.append(dirt)
             elif os.path.islink(dirent):
-                ihier.add_tarball_links(controller, dirt)
+                ihier.add_tarball_dirs("tarball_links", controller, dirt)
 
         if tarball_dirs:
-            verify_tar_dirs(ihier, tarball_dirs, ihier.add_invalid_tb_dirs, controller)
+            verify_tar_dirs(ihier, tarball_dirs, ihier.add_tarball_dirs, controller)
 
         if unpacking_tarball_dirs:
             verify_tar_dirs(
-                ihier,
-                unpacking_tarball_dirs,
-                ihier.add_invalid_unpacking_dirs,
-                controller,
+                ihier, unpacking_tarball_dirs, ihier.add_tarball_dirs, controller,
             )
 
     return 0
 
 
-class ResultsHierarchy(object):
-    def __init__(self, config):
-
-        self.config = config
-        self.controllers = list()
-        self.results_check = {
-            "res_empty_tarball_dirs": DictOfList(),
-            "res_invalid_tb_links": DictOfList(),
-            "res_incorrect_tb_dir_links": DictOfList(),
-            "res_invalid_tb_dir_links": DictOfList(),
-            "bad_prefixes": DictOfList(),
-            "unused_prefix_files": DictOfList(),
-            "missing_prefix_files": DictOfList(),
-            "bad_prefix_files": DictOfList(),
-            "unexpected_user_links": DictOfList(),
-            "wrong_user_links": DictOfList(),
-        }
-
-    def add_controller(self, controller):
-        self.controllers.append(controller)
-
-    def add_res_empty_tarball_dirs(self, controller, tbdir):
-        self.results_check["res_empty_tarball_dirs"].add_entry(controller, tbdir)
-
-    def add_res_invalid_tb_links(self, controller, tbdir):
-        self.results_check["res_invalid_tb_links"].add_entry(controller, tbdir)
-
-    def add_res_incorrect_tb_dir_links(self, controller, tbdir):
-        self.results_check["res_incorrect_tb_dir_links"].add_entry(controller, tbdir)
-
-    def add_res_invalid_tb_dir_links(self, controller, tbdir):
-        self.results_check["res_invalid_tb_dir_links"].add_entry(controller, tbdir)
-
-    def add_bad_prefixes(self, controller, tbdir):
-        self.results_check["bad_prefixes"].add_entry(controller, tbdir)
-
-    def add_unused_prefix_files(self, controller, tbdir):
-        self.results_check["unused_prefix_files"].add_entry(controller, tbdir)
-
-    def add_missing_prefix_files(self, controller, tbdir):
-        self.results_check["missing_prefix_files"].add_entry(controller, tbdir)
-
-    def add_bad_prefix_files(self, controller, tbdir):
-        self.results_check["bad_prefix_files"].add_entry(controller, tbdir)
-
-    def add_unexpected_user_links(self, controller, tbdir):
-        self.results_check["unexpected_user_links"].add_entry(controller, tbdir)
-
-    def add_wrong_user_links(self, controller, tbdir):
-        self.results_check["wrong_user_links"].add_entry(controller, tbdir)
-
-    def dump(self, f, stat, hier=False):
-        cnt = 0
-        for verify_tardir in sorted(self.controllers):
-            check = any(
-                [
-                    verify_tardir in self.results_check[k]._dict
-                    for k in self.results_check
-                ]
-            )
-            if check:
-                cnt = 1
-                if stat == 1:
-                    header(f, "start", self.config.TS[4:], hier.name, hier.path)
-                f.write(f"\nResults issues for controller: {verify_tardir}\n")
-                if verify_tardir in self.results_check["res_empty_tarball_dirs"]._dict:
-                    f.write("\tEmpty tar ball directories:\n")
-                    self.output_format(f, verify_tardir, "res_empty_tarball_dirs")
-                if verify_tardir in self.results_check["res_invalid_tb_links"]._dict:
-                    f.write(
-                        f"\tInvalid tar ball links (not in {self.config.ARCHIVE}):\n"
-                    )
-                    self.output_format(f, verify_tardir, "res_invalid_tb_links")
-                if (
-                    verify_tardir
-                    in self.results_check["res_incorrect_tb_dir_links"]._dict
-                ):
-                    f.write("\tIncorrectly constructed tar ball links:\n")
-                    self.output_format(f, verify_tardir, "res_incorrect_tb_dir_links")
-                if (
-                    verify_tardir
-                    in self.results_check["res_invalid_tb_dir_links"]._dict
-                ):
-                    f.write("\tTar ball links to invalid incoming location:\n")
-                    self.output_format(f, verify_tardir, "res_invalid_tb_dir_links")
-                if verify_tardir in self.results_check["unused_prefix_files"]._dict:
-                    f.write("\tTar ball links with unused prefix files:\n")
-                    self.output_format(f, verify_tardir, "unused_prefix_files")
-                if verify_tardir in self.results_check["missing_prefix_files"]._dict:
-                    f.write("\tTar ball links with missing prefix files:\n")
-                    self.output_format(f, verify_tardir, "missing_prefix_files")
-                if verify_tardir in self.results_check["bad_prefix_files"]._dict:
-                    f.write("\tTar ball links with bad prefix files:\n")
-                    self.output_format(f, verify_tardir, "bad_prefix_files")
-                if verify_tardir in self.results_check["bad_prefixes"]._dict:
-                    f.write("\tTar ball links with bad prefixes:\n")
-                    self.output_format(f, verify_tardir, "bad_prefixes")
-                if verify_tardir in self.results_check["unexpected_user_links"]._dict:
-                    f.write("\tTar ball links not configured for this user:\n")
-                    self.output_format(f, verify_tardir, "unexpected_user_links")
-                if verify_tardir in self.results_check["wrong_user_links"]._dict:
-                    f.write("\tTar ball links for the wrong user:\n")
-                    self.output_format(f, verify_tardir, "wrong_user_links")
-                if stat == 1:
-                    header(f, "end", self.config.TS[4:], hier.name, hier.path)
-
-        return cnt
-
-    def output_format(self, f, verify_tardir, dir_val):
-        for val in sorted(self.results_check[dir_val]._dict[verify_tardir]):
-            f.write(f"\t\t{val}\n")
-        return 0
+# Results Hierarchy
 
 
 def verify_user_arg(rhier, mdlogcfg, user_arg, controler, path):
@@ -696,13 +230,21 @@ def verify_user_arg(rhier, mdlogcfg, user_arg, controler, path):
     except NoOptionError:
         pass
     if not user:
-        rhier.add_unexpected_user_links(controler, path)
+        # No user in the metadata.log of the tar ball, but
+        # we are examining a link in the user tree that
+        # does not have a configured user, report it.
+        rhier.add_tarball_dirs("unexpected_user_links", controler, path)
     elif user_arg != user:
-        rhier.add_wrong_user_links(controler, path)
+        # Configured user does not match the user tree in
+        # which we found the link.
+        rhier.add_tarball_dirs("wrong_user_links", controler, path)
 
     return
 
 
+# 'rhier' is ResultsHierarchy class  and 'hier' is a
+# ControllerHierarchy class object. user_arg consists of
+# users which gets passed from user hierarchy.
 def verify_results(rhier, hier, user_arg=False):
     if user_arg:
         results_hierarchy = os.path.join(rhier.config.USERS, user_arg)
@@ -712,6 +254,8 @@ def verify_results(rhier, hier, user_arg=False):
     for controller in hier.verifylist:
         tarball_dirs, unpacking_tarball_dirs = (list() for i in range(2))
         if not os.path.isdir(os.path.join(rhier.config.ARCHIVE, controller)):
+            # Skip incoming controller directories that don't have an $ARCHIVE
+            # directory, handled in another part of the audit.
             continue
 
         dirent_entries = list()
@@ -734,9 +278,9 @@ def verify_results(rhier, hier, user_arg=False):
             path = dirent.split(os.path.join(controller, ""), 1)[1]
             if os.path.isdir(dirent) and len(os.listdir(dirent)) == 0:
                 if user_arg:
-                    rhier.add_res_empty_tarball_dirs(controler, path)
+                    rhier.add_tarball_dirs("empty_tarball_dirs", controler, path)
                 else:
-                    rhier.add_res_empty_tarball_dirs(controller, path)
+                    rhier.add_tarball_dirs("empty_tarball_dirs", controller, path)
             elif os.path.islink(dirent):
                 link = os.path.realpath(dirent)
                 tb = f"{os.path.basename(path)}.tar.xz"
@@ -746,14 +290,18 @@ def verify_results(rhier, hier, user_arg=False):
                 if not os.path.exists(
                     os.path.join(rhier.config.ARCHIVE, controller, tb)
                 ):
-                    rhier.add_res_invalid_tb_links(controller, base_dir)
+                    rhier.add_tarball_dirs("invalid_tb_links", controller, base_dir)
                 else:
                     if link != incoming_path:
-                        rhier.add_res_incorrect_tb_dir_links(controller, base_dir)
+                        rhier.add_tarball_dirs(
+                            "incorrect_tb_dir_links", controller, base_dir
+                        )
                     elif not os.path.isdir(incoming_path) and not os.path.islink(
                         incoming_path
                     ):
-                        rhier.add_res_invalid_tb_dir_links(controller, base_dir)
+                        rhier.add_tarball_dirs(
+                            "invalid_tb_dir_links", controller, base_dir
+                        )
                     else:
                         prefix_path = os.path.dirname(path)
                         prefix_file = os.path.join(
@@ -772,15 +320,21 @@ def verify_results(rhier, hier, user_arg=False):
                             pass
                         if prefix_path == "":
                             if prefix:
-                                rhier.add_bad_prefixes(controller, path)
+                                rhier.add_tarball_dirs("bad_prefixes", controller, path)
                             elif os.path.exists(prefix_file):
-                                rhier.add_unused_prefix_files(controller, path)
+                                rhier.add_tarball_dirs(
+                                    "unused_prefix_files", controller, path
+                                )
                         else:
                             if prefix:
                                 if prefix != prefix_path:
-                                    rhier.add_bad_prefixes(controller, path)
+                                    rhier.add_tarball_dirs(
+                                        "bad_prefixes", controller, path
+                                    )
                             elif not os.path.exists(prefix_file):
-                                rhier.add_missing_prefix_files(controller, path)
+                                rhier.add_tarball_dirs(
+                                    "missing_prefix_files", controller, path
+                                )
                             else:
                                 f = 0
                                 try:
@@ -790,47 +344,109 @@ def verify_results(rhier, hier, user_arg=False):
                                     f = 1
                                     pass
                                 if f == 1:
-                                    rhier.add_bad_prefix_files(controller, path)
+                                    rhier.add_tarball_dirs(
+                                        "bad_prefix_files", controller, path
+                                    )
                                 else:
                                     if prefix != prefix_path:
-                                        rhier.add_bad_prefixes(controller, path)
+                                        rhier.add_tarball_dirs(
+                                            "bad_prefixes", controller, path
+                                        )
                         if user_arg:
+                            # We are reviewing a user tree, so check the user in
+                            # the configuration.  Version 002 agents use the
+                            # metadata log to store a user as well.
                             verify_user_arg(rhier, mdlogcfg, user_arg, controler, path)
 
     return
 
 
-class UserHierarchy(Hierarchy):
-    def __init__(self, name, path, config):
-        super().__init__(name, path, config)
+# Controller Hierarchy
 
-        self.user_dir = list()
-        self.unexpected_objects = list()
+hierarchy_dispatcher = {
+    "incoming": verify_incoming,
+    "results": verify_results,
+    "users": verify_results,
+}
 
-    def add_unexpected_objects(self, user):
-        self.unexpected_objects.append(user)
 
-    def add_user_dir(self, user):
-        self.user_dir.append(user)
+# ihier is either IncomingHierarchy class object or ResultsHierarchy
+# class object based on the instance it is called and hier is a
+# ControllerHierarchy class object. hierarchy is the path of the
+# respective hierarchy
+def verify_hierarchy(ihier, hier, hierarchy):
 
-    def dump(self, f, hier, uhier):
-        cnt = 0
-        if self.unexpected_objects:
-            header(f, "start", self.config.TS[4:], self.name, self.path)
-            f.write("\nUnexpected files found:\n")
-            for controller in sorted(self.unexpected_objects):
-                f.write(f"\t{controller}\n")
-            cnt = cnt + 1
-            if self.user_dir:
-                cnt += hier.dump(f, 0)
-            header(f, "end", self.config.TS[4:], self.name, self.path)
+    hierchy = os.path.basename(hierarchy)
+    users = hier.config.USERS
+
+    if hier.verifylist:
+        if hierchy == "incoming":
+            hierarchy_dispatcher[hierchy](ihier, hier.verifylist)
+        elif hierchy == "results":
+            hierarchy_dispatcher[hierchy](ihier, hier)
+        elif os.path.dirname(hierarchy) == str(users):
+            hierarchy_dispatcher["users"](ihier, hier, hierchy)
         else:
-            if self.user_dir:
-                cnt += hier.dump(f, 1, uhier)
+            print(
+                '${PROG}: verify_controllers bad argument, hierarchy_root="${hierarchy}"\n'
+            )
+            return 1
+    return 0
 
-        return cnt
+
+# 'ihier' is either IncomingHierarchy class object or ResultsHierarchy
+# class object based on the instance it is called and hier is a
+# ControllerHierarchy class object. hierarchy is the path of the
+# respective hierarchy
+def verify_controllers(ihier, hier, hierarchy):
+
+    controllers = glob.iglob(os.path.join(hier.path, "*"))
+
+    # Find all the normal controller directories
+    for controller in controllers:
+        if os.path.isdir(controller):
+            hier.add_controller(os.path.basename(controller))
+        else:
+            hier.add_controller_list("unexpected_objects", os.path.basename(controller))
+
+    if hier.controllers:
+        for controller in hier.controllers:
+            dirent = os.path.join(hier.path, controller)
+            unexpected_dirs = list()
+            if not os.path.isdir(os.path.join(hier.config.ARCHIVE, controller)):
+                # We have a controller in the hierarchy which does not have a
+                # controller of the same name in the archive hierarchy.  All
+                # we do is report it, don't bother analyzing it further.
+                hier.add_controller_list("mialist", os.path.basename(controller))
+            else:
+                # Report any controllers with objects other than directories
+                # and links, while also recording any empty controllers.
+                if len(os.listdir(dirent)) == 0:
+                    hier.add_controller_list("empty_controllers", controller)
+                    continue
+                else:
+                    direct_entries = glob.iglob(
+                        os.path.join(hier.path, controller, "*")
+                    )
+                    for item in direct_entries:
+                        if not os.path.isdir(item) and not os.path.islink(item):
+                            unexpected_dirs.append(controller)
+
+                if unexpected_dirs:
+                    hier.add_controller_list("unexpected_controllers", controller)
+                hier.add_verifylist(controller)
+
+    if verify_hierarchy(ihier, hier, hierarchy) > 0:
+        return 1
+
+    return 0
 
 
+# User Hierarchy
+
+# 'rhier' is the ResultsHierarchy class object,
+# 'chier' is ControllerHierarchy class object and
+# 'hier' is UserHierarchy class object.
 def verify_users(rhier, chier, hier):
     cnt = 0
     users = hier.path
@@ -863,6 +479,8 @@ def verify_users(rhier, chier, hier):
     return
 
 
+# check function deals with handling the integrity of
+# ARCHIVE, INCOMING, RESULTS and USERS hierarchy
 def check_func(name, pbdirname):
     pbdir = name
     pbdir_p = os.path.realpath(pbdir)
@@ -889,7 +507,7 @@ def main():
         return 2
 
     try:
-        config = PbenchConfig(cfg_name)
+        config = PbenchServerConfig(cfg_name)
     except BadConfig as e:
         print("{}: {} (config file {})".format(_NAME_, e, cfg_name), file=sys.stderr)
         return 1
