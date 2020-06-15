@@ -86,14 +86,14 @@ def md5_check(tb, tbmd5, logger):
     return (archive_md5_hex_value, archive_tar_hex_value)
 
 
-def process_tb(config, logger, receive_dir, qdir_md5, duplicates, errors, ef):
+def process_tb(config, logger, receive_dir, qdir_md5, duplicates, errors, errorf, logf):
 
     list_check = glob.glob(
         os.path.join(receive_dir, "**", "*.tar.xz.md5"), recursive=True
     )
 
     archive = Path(config.ARCHIVE)
-    logger.info("{}", config.TS)
+    logf.write(f"{config.TS}\n")
     list_check.sort()
     nstatus = ""
 
@@ -115,16 +115,16 @@ def process_tb(config, logger, receive_dir, qdir_md5, duplicates, errors, ef):
             and (dest / result_name).exists()
             and (dest / tbmd5.name).exists()
         ):
-            ef.write(f"{config.TS}: Duplicate: {tb} duplicate name\n")
+            errorf.write(f"{config.TS}: Duplicate: {tb} duplicate name\n")
             quarantine((duplicates / controller), logger, tb, tbmd5)
             ndups += 1
             continue
 
         archive_tar_hex_value, archive_md5_hex_value = md5_check(tb, tbmd5, logger)
         if archive_tar_hex_value != archive_md5_hex_value:
-            ef.write(f"{config.TS}: Quarantined: {tb} failed MD5 check\n")
-            logger.info("{}: FAILED", tb.name)
-            logger.info("md5sum: WARNING: 1 computed checksum did NOT match")
+            errorf.write(f"{config.TS}: Quarantined: {tb} failed MD5 check\n")
+            logf.write(f"{tb.name}: FAILED\n")
+            logf.write("md5sum: WARNING: 1 computed checksum did NOT match\n")
             quarantine((qdir_md5 / controller), logger, tb, tbmd5)
             nquarantined += 1
             continue
@@ -179,7 +179,7 @@ def process_tb(config, logger, receive_dir, qdir_md5, duplicates, errors, ef):
         ntbs += 1
 
         nstatus = f"{nstatus}{config.TS}: processed {tb}\n"
-        logger.info(f"{tb.name}: OK")
+        logf.write(f"{tb.name}: OK\n")
 
     return Results(
         nstatus=nstatus,
@@ -219,8 +219,6 @@ def main(cfg_name):
         print(f"{_NAME_}: Bad ARCHIVE={config.ARCHIVE}", file=sys.stderr)
         return 1
 
-    # logger = get_pbench_logger(_NAME_, config)
-
     try:
         os.mkdir(os.path.join(config.LOGSDIR, "pbench-server-prep-shim-002"))
     except FileExistsError:
@@ -244,6 +242,13 @@ def main(cfg_name):
 
     logger = get_pbench_logger(_NAME_, config)
 
+    logfile = Path(
+        config.LOGSDIR, "pbench-server-prep-shim-002", "pbench-server-prep-shim-002.log"
+    )
+    log_f = open(logfile, "w")
+
+    logger.info("{}", config.TS)
+
     qdir_md5 = qdirs_check("quarantine", Path(qdir, "md5-002"), logger)
     duplicates = qdirs_check("duplicates", Path(qdir, "duplicates-002"), logger)
 
@@ -257,7 +262,7 @@ def main(cfg_name):
         return 1
 
     counts = process_tb(
-        config, logger, receive_dir, qdir_md5, duplicates, errors, error_f
+        config, logger, receive_dir, qdir_md5, duplicates, errors, error_f, log_f
     )
 
     result_string = (
@@ -268,6 +273,7 @@ def main(cfg_name):
         f" {counts.nerrs} errors."
     )
 
+    log_f.write(f"{result_string}\n")
     logger.info(result_string)
 
     # prepare and send report
