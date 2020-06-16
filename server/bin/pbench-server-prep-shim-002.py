@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 # -*- mode: python -*-
 
+# This script is used to prepare the tarballs that a version 002 client
+# submits for further processing. It copies the tarballs and their MD5
+# sums to the archive (after checking) and sets the state links, so
+# that the dispatch script will pick them up and get the ball
+# rolling. IOW, it does impedance matching between version 002 clients
+# and the server scripts.
+
 import os
 import sys
 import glob
@@ -42,6 +49,7 @@ def fetch_config_val(config, ef):
         ef.write(f"Failed: {qdir} does not exist, or is not a directory\n")
         return None, None
 
+    # we are explicitly handling version-002 data in this shim
     receive_dir_prefix = config.get("pbench-server", "pbench-receive-dir-prefix")
     if not receive_dir_prefix:
         ef.write("Failed: getconf.py pbench-receive-dir-prefix pbench-server\n")
@@ -88,6 +96,9 @@ def md5_check(tb, tbmd5, logger):
 
 def process_tb(config, logger, receive_dir, qdir_md5, duplicates, errors, errorf, logf):
 
+    # Check for results that are ready for processing: version 002 agents
+    # upload the MD5 file as xxx.md5.check and they rename it to xxx.md5
+    # after they are done with MD5 checking so that's what we look for.
     list_check = glob.glob(
         os.path.join(receive_dir, "**", "*.tar.xz.md5"), recursive=True
     )
@@ -101,18 +112,24 @@ def process_tb(config, logger, receive_dir, qdir_md5, duplicates, errors, errorf
 
     for tbmd5 in list_check:
         ntotal += 1
+
+        # full pathname of tarball
         tb = Path(tbmd5[0:-4])
         tbmd5 = Path(tbmd5)
+
+        # directory
         tbdir = tb.parent
-        result_name = tb.name
+
+        # resultname: get the basename foo.tar.xz and then strip the .tar.xz
+        resultname = tb.name
 
         controller = tbdir.name
         dest = archive / controller
 
         if (
-            (dest / result_name).is_file()
+            (dest / resultname).is_file()
             and (dest / tbmd5.name).is_file()
-            and (dest / result_name).exists()
+            and (dest / resultname).exists()
             and (dest / tbmd5.name).exists()
         ):
             errorf.write(f"{config.TS}: Duplicate: {tb} duplicate name\n")
@@ -129,6 +146,7 @@ def process_tb(config, logger, receive_dir, qdir_md5, duplicates, errors, errorf
             nquarantined += 1
             continue
 
+        # make the destination directory and its TODO subdir if necessary.
         try:
             os.makedirs(dest / "TODO")
         except FileExistsError:
@@ -140,15 +158,15 @@ def process_tb(config, logger, receive_dir, qdir_md5, duplicates, errors, errorf
             nerrs += 1
             continue
 
+        # First, copy the small .md5 file to the destination. That way, if
+        # that operation fails it will fail quickly since the file is small.
         try:
-            shutil.copy(tb, dest)
-            shutil.copy(tbmd5, dest)
+            shutil.copy2(tbmd5, dest)
         except Exception:
             logger.error(
                 "{}: Error in copying tarball files to Destination path.", config.TS
             )
             try:
-                os.remove(dest / result_name)
                 os.remove(dest / tbmd5.name)
             except Exception:
                 logger.error(
@@ -158,8 +176,30 @@ def process_tb(config, logger, receive_dir, qdir_md5, duplicates, errors, errorf
             nerrs += 1
             continue
 
+        # Next, mv the "large" tar ball to the destination. If the destination
+        # is on the same device, the move should be quick. If the destination is
+        # on a different device, the move will be a copy and delete, and will
+        # take a bit longer.  If it fails, the file will NOT be at the
+        # destination.
         try:
-            os.remove(tb)
+            shutil.move(tb, dest)
+        except Exception:
+            logger.error(
+                "{}: Error in copying tarball files to Destination path.", config.TS
+            )
+            try:
+                os.remove(dest / resultname)
+            except Exception:
+                logger.error(
+                    "{}: Warning: cleanup of copy failure failed itself.", config.TS
+                )
+            quarantine((errors / controller), logger, tb, tbmd5)
+            nerrs += 1
+            continue
+
+        # Now that we have successfully moved the tar ball and its .md5 to the
+        # destination, we can remove the original .md5 file.
+        try:
             os.remove(tbmd5)
         except Exception:
             logger.error(
@@ -167,9 +207,11 @@ def process_tb(config, logger, receive_dir, qdir_md5, duplicates, errors, errorf
             )
 
         try:
-            os.symlink((dest / result_name), (dest / "TODO" / result_name))
+            os.symlink((dest / resultname), (dest / "TODO" / resultname))
         except Exception:
             logger.error("{}: Error in creation of symlink.", config.TS)
+            # if we fail to make the link, we quarantine the (already moved)
+            # tarball and .md5.
             quarantine(
                 (errors / controller), logger, (dest / tb), (dest / tbmd5),
             )
