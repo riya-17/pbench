@@ -37,8 +37,6 @@ class PbenchMDLogConfig(object):
 
 
 # Archive Hierarchy
-
-
 def verify_subdirs(hier, controller, directories):
     linkdirs = sorted(hier.config.LINKDIRS.split(" "))
     if directories:
@@ -86,17 +84,23 @@ def verify_prefixes(hier, controller):
     return
 
 
-# 'hier' is an object of ArchiveHierarchy class imported from hierarchy.py
-def verify_archive(hier):
-    controllers = glob.iglob(os.path.join(hier.path, "*"))
-
-    # Find all the non-directory files at the same level of the controller
-    # directories and report them, and find all the normal controller directories.
+def valid_invalid_controllers(hier, controllers):
+    """Find all the non-directory files at the same level of the controller
+    directories and report them, and find all the normal controller directories.
+    """
     for controller in controllers:
         if os.path.isdir(controller):
             hier.add_controller(os.path.basename(controller))
         else:
             hier.add_bad_controller(controller)
+    return
+
+
+# 'hier' is an object of ArchiveHierarchy class imported from hierarchy.py
+def verify_archive(hier):
+
+    controllers = glob.iglob(os.path.join(hier.path, "*"))
+    valid_invalid_controllers(hier, controllers)
 
     # now check each "good" controller and get the tarballs it contains
     for controller in hier.controllers:
@@ -145,8 +149,6 @@ def verify_archive(hier):
 
 
 # Incoming Hierarchy
-
-
 def verify_tar_dirs(ihier, tarball_dirs, tblist, controller):
     for tb in tarball_dirs:
         if tb.endswith("unpack"):
@@ -167,6 +169,7 @@ def verify_tar_dirs(ihier, tarball_dirs, tblist, controller):
                     pass
         else:
             tblist(val, controller, os.path.basename(tb))
+    return
 
 
 # 'ihier' is IncomingHierarchy class object
@@ -219,9 +222,8 @@ def verify_incoming(ihier, verifylist):
 
 
 # Results Hierarchy
-
-
-def verify_user_arg(rhier, mdlogcfg, user_arg, controler, path):
+def verify_user_arg(rhier, mdlogcfg, user_arg, user_controller, path):
+    """fetch user from the config file and verifies its validity"""
     user = ""
     try:
         user = mdlogcfg.get("run", "user")
@@ -230,55 +232,64 @@ def verify_user_arg(rhier, mdlogcfg, user_arg, controler, path):
     except NoOptionError:
         pass
     if not user:
-        # No user in the metadata.log of the tar ball, but
-        # we are examining a link in the user tree that
-        # does not have a configured user, report it.
-        rhier.add_tarball_dirs("unexpected_user_links", controler, path)
+        """No user in the metadata.log of the tar ball, but
+        we are examining a link in the user tree that
+        does not have a configured user, report it.
+        """
+        rhier.add_tarball_dirs("unexpected_user_links", user_controller, path)
     elif user_arg != user:
-        # Configured user does not match the user tree in
-        # which we found the link.
-        rhier.add_tarball_dirs("wrong_user_links", controler, path)
+        """Configured user does not match the user tree in
+        which we found the link."""
+        rhier.add_tarball_dirs("wrong_user_links", user_controller, path)
 
     return
 
 
-# 'rhier' is ResultsHierarchy class  and 'hier' is a
-# ControllerHierarchy class object. user_arg consists of
-# users which gets passed from user hierarchy.
+def list_direct_entries(results_hierarchy, controller):
+
+    direct_entries = list()
+    for root, dirs, files in os.walk(
+        os.path.join(results_hierarchy, controller), topdown=True
+    ):
+        for name in files:
+            direct_entries.append(os.path.join(root, name))
+        for name in dirs:
+            direct_entries.append(os.path.join(root, name))
+
+    return direct_entries
+
+
 def verify_results(rhier, hier, user_arg=False):
+    """'rhier' is ResultsHierarchy class  and 'hier' is a
+    ControllerHierarchy class object. user_arg consists of
+    users which gets passed from user hierarchy.
+    """
     if user_arg:
         results_hierarchy = os.path.join(rhier.config.USERS, user_arg)
     else:
         results_hierarchy = hier.path
 
     for controller in hier.verifylist:
-        tarball_dirs, unpacking_tarball_dirs = (list() for i in range(2))
         if not os.path.isdir(os.path.join(rhier.config.ARCHIVE, controller)):
-            # Skip incoming controller directories that don't have an $ARCHIVE
-            # directory, handled in another part of the audit.
+            """Skip incoming controller directories that don't have an $ARCHIVE
+            directory, handled in another part of the audit.
+            """
             continue
 
-        dirent_entries = list()
-        for root, dirs, files in os.walk(
-            os.path.join(results_hierarchy, controller), topdown=True
-        ):
-            for name in files:
-                dirent_entries.append(os.path.join(root, name))
-            for name in dirs:
-                dirent_entries.append(os.path.join(root, name))
+        direct_entries = list_direct_entries(results_hierarchy, controller)
 
         if user_arg:
-            controler = f"{user_arg}/{controller}"
-            rhier.add_controller(controler)
+            user_controller = f"{user_arg}/{controller}"
+            rhier.add_controller(user_controller)
         else:
             rhier.add_controller(controller)
 
-        for dirent in dirent_entries:
+        for dirent in direct_entries:
             base_dir = os.path.basename(dirent)
             path = dirent.split(os.path.join(controller, ""), 1)[1]
             if os.path.isdir(dirent) and len(os.listdir(dirent)) == 0:
                 if user_arg:
-                    rhier.add_tarball_dirs("empty_tarball_dirs", controler, path)
+                    rhier.add_tarball_dirs("empty_tarball_dirs", user_controller, path)
                 else:
                     rhier.add_tarball_dirs("empty_tarball_dirs", controller, path)
             elif os.path.islink(dirent):
@@ -342,7 +353,6 @@ def verify_results(rhier, hier, user_arg=False):
                                         prefix = file.read().replace("\n", "")
                                 except Exception:
                                     f = 1
-                                    pass
                                 if f == 1:
                                     rhier.add_tarball_dirs(
                                         "bad_prefix_files", controller, path
@@ -353,16 +363,18 @@ def verify_results(rhier, hier, user_arg=False):
                                             "bad_prefixes", controller, path
                                         )
                         if user_arg:
-                            # We are reviewing a user tree, so check the user in
-                            # the configuration.  Version 002 agents use the
-                            # metadata log to store a user as well.
-                            verify_user_arg(rhier, mdlogcfg, user_arg, controler, path)
+                            """We are reviewing a user tree, so check the user in
+                            the configuration.  Version 002 agents use the
+                            metadata log to store a user as well.
+                            """
+                            verify_user_arg(
+                                rhier, mdlogcfg, user_arg, user_controller, path
+                            )
 
     return
 
 
 # Controller Hierarchy
-
 hierarchy_dispatcher = {
     "incoming": verify_incoming,
     "results": verify_results,
@@ -370,12 +382,12 @@ hierarchy_dispatcher = {
 }
 
 
-# ihier is either IncomingHierarchy class object or ResultsHierarchy
-# class object based on the instance it is called and hier is a
-# ControllerHierarchy class object. hierarchy is the path of the
-# respective hierarchy
 def verify_hierarchy(ihier, hier, hierarchy):
-
+    """ihier is either IncomingHierarchy class object or ResultsHierarchy
+    class object based on the instance it is called and hier is a
+    ControllerHierarchy class object. hierarchy is the path of the
+    respective hierarchy
+    """
     hierchy = os.path.basename(hierarchy)
     users = hier.config.USERS
 
@@ -394,13 +406,7 @@ def verify_hierarchy(ihier, hier, hierarchy):
     return 0
 
 
-# 'ihier' is either IncomingHierarchy class object or ResultsHierarchy
-# class object based on the instance it is called and hier is a
-# ControllerHierarchy class object. hierarchy is the path of the
-# respective hierarchy
-def verify_controllers(ihier, hier, hierarchy):
-
-    controllers = glob.iglob(os.path.join(hier.path, "*"))
+def normal_controllers(hier, controllers):
 
     # Find all the normal controller directories
     for controller in controllers:
@@ -408,19 +414,32 @@ def verify_controllers(ihier, hier, hierarchy):
             hier.add_controller(os.path.basename(controller))
         else:
             hier.add_controller_list("unexpected_objects", os.path.basename(controller))
+    return
+
+
+def verify_controllers(ihier, hier, hierarchy):
+    """'ihier' is either IncomingHierarchy class object or ResultsHierarchy
+    class object based on the instance it is called and hier is a
+    ControllerHierarchy class object. hierarchy is the path of the
+    respective hierarchy
+    """
+    controllers = glob.iglob(os.path.join(hier.path, "*"))
+    normal_controllers(hier, controllers)
 
     if hier.controllers:
         for controller in hier.controllers:
             dirent = os.path.join(hier.path, controller)
             unexpected_dirs = list()
             if not os.path.isdir(os.path.join(hier.config.ARCHIVE, controller)):
-                # We have a controller in the hierarchy which does not have a
-                # controller of the same name in the archive hierarchy.  All
-                # we do is report it, don't bother analyzing it further.
+                """We have a controller in the hierarchy which does not have a
+                controller of the same name in the archive hierarchy.  All
+                we do is report it, don't bother analyzing it further.
+                """
                 hier.add_controller_list("mialist", os.path.basename(controller))
             else:
-                # Report any controllers with objects other than directories
-                # and links, while also recording any empty controllers.
+                """Report any controllers with objects other than directories
+                and links, while also recording any empty controllers.
+                """
                 if len(os.listdir(dirent)) == 0:
                     hier.add_controller_list("empty_controllers", controller)
                     continue
@@ -443,11 +462,25 @@ def verify_controllers(ihier, hier, hierarchy):
 
 
 # User Hierarchy
+def expected_unexpected_user(hier, users_dirs):
 
-# 'rhier' is the ResultsHierarchy class object,
-# 'chier' is ControllerHierarchy class object and
-# 'hier' is UserHierarchy class object.
+    user_dir = list()
+    for user in users_dirs:
+        u = os.path.basename(user)
+        if os.path.isdir(user):
+            user_dir.append(user)
+            hier.add_user_dir(u)
+        else:
+            hier.add_unexpected_objects(u)
+
+    return user_dir
+
+
 def verify_users(rhier, chier, hier):
+    """'rhier' is the ResultsHierarchy class object,
+    'chier' is ControllerHierarchy class object and
+    'hier' is UserHierarchy class object.
+    """
     cnt = 0
     users = hier.path
 
@@ -460,15 +493,7 @@ def verify_users(rhier, chier, hier):
         return 1
 
     users_dirs = glob.iglob(os.path.join(users, "*"))
-    user_dir = list()
-
-    for user in users_dirs:
-        u = os.path.basename(user)
-        if os.path.isdir(user):
-            user_dir.append(user)
-            hier.add_user_dir(u)
-        else:
-            hier.add_unexpected_objects(u)
+    user_dir = expected_unexpected_user(hier, users_dirs)
 
     if user_dir:
         for user in user_dir:
@@ -479,9 +504,10 @@ def verify_users(rhier, chier, hier):
     return
 
 
-# check function deals with handling the integrity of
-# ARCHIVE, INCOMING, RESULTS and USERS hierarchy
 def check_func(name, pbdirname):
+    """check function deals with handling the integrity of
+    ARCHIVE, INCOMING, RESULTS and USERS hierarchy
+    """
     pbdir = name
     pbdir_p = os.path.realpath(pbdir)
 
@@ -549,29 +575,60 @@ def main():
 
         ahier = ArchiveHierarchy("archive", config.ARCHIVE, config)
         verify_archive(ahier)
-        cnt = ahier.dump(f)
+        cnt = 0
+        if ahier.check_controller_in_archive():
+            f.write(f"\nstart-{config.TS[4:]}: archive hierarchy: {config.ARCHIVE}\n")
+            cnt = ahier.dump(f)
+            ahier.header(f, "end")
         if cnt > 0:
             ret += 1
 
-        ihier = IncomingHierarchy(config)
+        ihier = IncomingHierarchy("incoming", config.INCOMING, config)
         cihier = ControllerHierarchy("incoming", config.INCOMING, config)
         verify_controllers(ihier, cihier, config.INCOMING)
-        cnt = cihier.dump(f, ihier, cihier)
+        cnt = 0
+        c_check = cihier.check_controller_in_controller()
+        i_check = ihier.check_controller_in_incoming()
+        if c_check or i_check:
+            cihier.header(f, "start")
+            if c_check:
+                cnt = cihier.dump(f)
+            if i_check:
+                cnt += ihier.dump(f)
+            cihier.header(f, "end")
         if cnt > 0:
             ret += 1
 
-        rhier = ResultsHierarchy(config)
+        rhier = ResultsHierarchy("results", config.RESULTS, config)
         crhier = ControllerHierarchy("results", config.RESULTS, config)
         verify_controllers(rhier, crhier, config.RESULTS)
-        cnt = crhier.dump(f, rhier, crhier)
+        cnt = 0
+        c_check = crhier.check_controller_in_controller()
+        r_check = rhier.check_controller_in_results()
+        if c_check or r_check:
+            crhier.header(f, "start")
+            if c_check:
+                cnt = crhier.dump(f)
+            if r_check:
+                cnt += rhier.dump(f)
+            crhier.header(f, "end")
         if cnt > 0:
             ret += 1
 
-        ruhier = ResultsHierarchy(config)
+        ruhier = ResultsHierarchy("results", config.RESULTS, config)
         cuhier = ControllerHierarchy("results", config.RESULTS, config)
         uhier = UserHierarchy("users", config.USERS, config)
         verify_users(ruhier, cuhier, uhier)
-        cnt = uhier.dump(f, ruhier, uhier)
+        cnt = 0
+        u_check = uhier.check_controller_in_users()
+        r_check = ruhier.check_controller_in_results()
+        if u_check or r_check:
+            uhier.header(f, "start")
+            if u_check:
+                cnt = uhier.dump(f)
+            if r_check:
+                cnt += ruhier.dump(f)
+            uhier.header(f, "end")
         if cnt > 0:
             ret += 1
 
