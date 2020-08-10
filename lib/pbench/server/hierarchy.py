@@ -38,10 +38,47 @@ def filepermissions(mode):
 class Hierarchy(object):
     """Super class of Hierarchies"""
 
+    UNEXPECTED_DIRS = "unexpected_dirs"
+    SUBDIR_STATUS_INDICATORS = "subdir_status_indicators"
+    UNEXPECTED_SYMLINKS = "unexpected_symlinks"
+    UNEXPECTED_OBJECTS = "unexpected_objects"
+    NON_PREFIXES = "non_prefixes"
+    WRONG_PREFIXES = "wrong_prefixes"
+    PREFIX_STATUS_INDICATORS = "prefix_status_indicators"
+    MIALIST = "mialist"
+    EMPTY_CONTROLLERS = "empty_controllers"
+    UNEXPECTED_CONTROLLERS = "unexpected_controllers"
+    INVALID_TB_DIRS = "invalid_tb_dirs"
+    EMPTY_TARBALL_DIRS = "empty_tarball_dirs"
+    INVALID_UNPACKING_DIRS = "invalid_unpacking_dirs"
+    TARBALL_LINKS = "tarball_links"
+    INVALID_TB_LINKS = "invalid_tb_links"
+    INCORRECT_TB_DIR_LINKS = "incorrect_tb_dir_links"
+    INVALID_TB_DIR_LINKS = "invalid_tb_dir_links"
+    UNUSED_PREFIX_FILES = "unused_prefix_files"
+    MISSING_PREFIX_FILES = "missing_prefix_files"
+    BAD_PREFIX_FILES = "bad_prefix_files"
+    BAD_PREFIXES = "bad_prefixes"
+    UNEXPECTED_USER_LINKS = "unexpected_user_links"
+    WRONG_USER_LINKS = "wrong_user_links"
+
     def __init__(self, name, path, config):
         self.name = name
         self.path = path
         self.config = config
+        self.controllers = list()
+        self.bad_controllers = list()
+        self.validation_list = None
+
+    def add_controller(self, controller):
+        self.controllers.append(controller)
+
+    def add_bad_controller(self, controller):
+        self.bad_controllers.append(controller)
+
+    def add_unexpected_controllers(self, val, controller, dirs):
+        """Gather values for each validation_list dict key"""
+        self.validation_list[val][controller] = dirs
 
     def header(self, fp, status):
         """Adds main starting and ending messages for each Hierarchy"""
@@ -51,52 +88,42 @@ class Hierarchy(object):
         )
         return
 
-    def check_controller_in_list(self, controller, hierarchy_check):
+    def check_controller_in_list(self, controller):
         """Checks whether there are controllers in dictionary or not"""
         return any(
-            [controller in hierarchy_check[key]._dict for key in hierarchy_check]
+            [
+                controller in self.validation_list[key]._dict
+                for key in self.validation_list
+            ]
         )
-
-    def _dump(self, fp, hierarchy_check):
-        """Validates and Output collected data"""
-        cnt = 0
-        for controller in sorted(self.controllers):
-            if self.check_controller_in_list(controller, hierarchy_check):
-                fp.write(f"\n{self.name.title()} issues for controller: {controller}\n")
-                for key in hierarchy_check:
-                    cnt = self.dump_check(fp, hierarchy_check, controller, key, cnt)
-
-        return cnt
 
     """
     ##FIXME: The mention of hierarchies(archive, controller) from here on, in
             Hierarchy class is mainly to keep the format algned with the shell script
     """
 
-    def dump_check(self, fp, hierarchy_check, controller, key, cnt, hierarchy=False):
+    def dump_check(self, fp, controller, key, cnt, hierarchy=False):
         """Output Messages for each list of controllers, files,
         directories, etc depicting their cause of being added to
         that list or dictionary
         """
         lead_asterisk = "\t* " if hierarchy == "archive" else "\t"
-        if controller in hierarchy_check[key]._dict:
+        if controller in self.validation_list[key]._dict:
             if key not in ["subdir_status_indicators", "prefix_status_indicators"]:
-                fp.write(f"{lead_asterisk}{hierarchy_check[key]._get_msg()}\n")
+                fp.write(f"{lead_asterisk}{self.validation_list[key]._get_msg()}\n")
                 if hierarchy == "archive":
                     cnt = self.output_format(
-                        fp, hierarchy_check[key]._dict[controller], cnt, "archive"
+                        fp, self.validation_list[key]._dict[controller], cnt, "archive"
                     )
                 else:
                     cnt = self.output_format(
-                        fp, hierarchy_check[key]._dict[controller], cnt
+                        fp, self.validation_list[key]._dict[controller], cnt
                     )
-            elif "subdirs" in hierarchy_check[key]._dict[controller]:
-                fp.write(
-                    "\t* No state directories found in this controller directory.\n"
-                )
+            elif "subdirs" in self.validation_list[key]._dict[controller]:
+                fp.write(f"{lead_asterisk}{self.validation_list[key]._get_msg()}\n")
                 cnt += 1
-            elif "prefix_dir" in hierarchy_check[key]._dict[controller]:
-                fp.write("\t* Prefix directory, .prefix, is not a directory!\n")
+            elif "prefix_dir" in self.validation_list[key]._dict[controller]:
+                fp.write(f"{lead_asterisk}{self.validation_list[key]._get_msg()}\n")
                 cnt += 1
         return cnt
 
@@ -168,41 +195,33 @@ class ArchiveHierarchy(Hierarchy):
     def __init__(self, name, path, config):
         super().__init__(name, path, config)
 
-        self.controllers = list()
-        self.bad_controllers = list()
         self.tarballs = list()
-        self.archive_check = {
-            "unexpected_dirs": DictOfList(
+        self.validation_list = {
+            self.UNEXPECTED_DIRS: DictOfList(
                 "Unexpected state directories found in this controller directory:"
             ),
-            "subdir_status_indicators": DictOfList(""),
-            "unexpected_symlinks": DictOfList(
+            self.SUBDIR_STATUS_INDICATORS: DictOfList(
+                "No state directories found in this controller directory."
+            ),
+            self.UNEXPECTED_SYMLINKS: DictOfList(
                 "Unexpected symlinks in controller directory:"
             ),
-            "unexpected_objects": DictOfList(
+            self.UNEXPECTED_OBJECTS: DictOfList(
                 "Unexpected files in controller directory:"
             ),
-            "non_prefixes": DictOfList(
+            self.NON_PREFIXES: DictOfList(
                 "Unexpected file system objects in .prefix directory:"
             ),
-            "wrong_prefixes": DictOfList(
+            self.WRONG_PREFIXES: DictOfList(
                 "Wrong prefix file names found in /.prefix directory:"
             ),
-            "prefix_status_indicators": DictOfList(""),
+            self.PREFIX_STATUS_INDICATORS: DictOfList(
+                "Prefix directory, .prefix, is not a directory!"
+            ),
         }
-
-    def add_controller(self, controller):
-        self.controllers.append(controller)
-
-    def add_bad_controller(self, controller):
-        self.bad_controllers.append(controller)
 
     def add_tarballs(self, controller):
         self.tarballs.append(controller)
-
-    def add_unexpected_controllers(self, val, controller, dirs):
-        """Gather values for each archive_check dict key"""
-        self.archive_check[val][controller] = dirs
 
     def dump(self, fp):
         """Checks and Output collected data"""
@@ -211,13 +230,11 @@ class ArchiveHierarchy(Hierarchy):
             self.output_bad_controllers(fp)
             cnt += 1
         for controller in sorted(self.controllers):
-            check = self.check_controller_in_list(controller, self.archive_check)
+            check = self.check_controller_in_list(controller)
             if check or controller not in self.tarballs:
                 fp.write(f"\nController: {controller}\n")
-                for key in self.archive_check:
-                    cnt += self.dump_check(
-                        fp, self.archive_check, controller, key, cnt, "archive"
-                    )
+                for key in self.validation_list:
+                    cnt += self.dump_check(fp, controller, key, cnt, "archive")
                 if controller not in self.tarballs:
                     fp.write(
                         "\t* No tar ball files found in this controller directory.\n"
@@ -225,10 +242,10 @@ class ArchiveHierarchy(Hierarchy):
                     cnt += 1
         return cnt
 
-    def check_controller_in_archive(self):
+    def check_controller(self):
         for controller in sorted(self.controllers):
             if (
-                self.check_controller_in_list(controller, self.archive_check)
+                self.check_controller_in_list(controller)
                 or controller not in self.tarballs
             ):
                 return True
@@ -254,153 +271,134 @@ class ControllerHierarchy(Hierarchy):
     def __init__(self, name, path, config):
         super().__init__(name, path, config)
 
-        self.controllers = list()
         self.verifylist = list()
-        self.controller_check = {
-            "unexpected_objects": List("Unexpected files found:"),
-            "mialist": List(
+        self.validation_list = {
+            self.MIALIST: List(
                 f"Controllers which do not have a {self.config.ARCHIVE} directory:"
             ),
-            "empty_controllers": List("Controllers which are empty:"),
-            "unexpected_controllers": List(
+            self.EMPTY_CONTROLLERS: List("Controllers which are empty:"),
+            self.UNEXPECTED_CONTROLLERS: List(
                 "Controllers which have unexpected objects:"
             ),
         }
 
-    def add_controller(self, controller):
-        self.controllers.append(controller)
-
     def add_controller_list(self, val, controller):
         """Gather values for each controller_check dict key"""
-        self.controller_check[val].additem(controller)
+        self.validation_list[val].additem(controller)
 
-    def add_verifylist(self, controller):
+    def add_verify_list(self, controller):
         if controller not in self.verifylist:
             self.verifylist.append(controller)
 
-    def check_controller_in_controller(self):
-        return any(
-            [self.controller_check[val].getlist() for val in self.controller_check]
+    def check_controller(self):
+        return self.bad_controllers or any(
+            [self.validation_list[val].getlist() for val in self.validation_list]
         )
 
     def dump(self, fp):
         """Validates and Output collected Hierarchy data"""
         cnt = 0
-        for val in self.controller_check:
-            if self.controller_check[val].getlist():
-                fp.write(f"\n{self.controller_check[val]._get_msg()}\n")
+        if self.bad_controllers:
+            fp.write("\nUnexpected files found:\n")
+            for controller in sorted(self.bad_controllers):
+                fp.write(f"\t{os.path.basename(controller)}\n")
+            cnt = cnt + 1
+        for val in self.validation_list:
+            if self.validation_list[val].getlist():
+                fp.write(f"\n{self.validation_list[val]._get_msg()}\n")
                 cnt += self.output_format(
-                    fp, self.controller_check[val].getlist(), cnt, "controller"
+                    fp, self.validation_list[val].getlist(), cnt, "controller"
                 )
         return cnt
 
 
-class IncomingHierarchy(Hierarchy):
-    def __init__(self, name, path, config):
-        super().__init__(name, path, config)
-
-        self.controllers = list()
-        self.incoming_check = {
-            "invalid_tb_dirs": DictOfList(
-                f"Invalid tar ball directories (not in {self.config.ARCHIVE}):"
-            ),
-            "empty_tarball_dirs": DictOfList("Empty tar ball directories:"),
-            "invalid_unpacking_dirs": DictOfList(
-                "Invalid unpacking directories (missing tar ball):"
-            ),
-            "tarball_links": DictOfList("Invalid tar ball links:"),
-        }
-
-    def add_controller(self, controller):
-        self.controllers.append(controller)
-
-    def add_tarball_dirs(self, val, controller, dirt):
-        """Gather values for each incoming_check dict key"""
-        self.incoming_check[val][controller] = dirt
-
-    def check_controller_in_incoming(self):
+class IRHierarchy(object):
+    def check_controller(self):
         for controller in sorted(self.controllers):
-            if self.check_controller_in_list(controller, self.incoming_check):
-                return True
-        return False
-
-    def dump(self, fp):
-        """Validates and output collected data"""
-        return self._dump(fp, self.incoming_check)
-
-
-class ResultsHierarchy(Hierarchy):
-    def __init__(self, name, path, config):
-        super().__init__(name, path, config)
-
-        self.controllers = list()
-        self.results_check = {
-            "empty_tarball_dirs": DictOfList("Empty tar ball directories:"),
-            "invalid_tb_links": DictOfList(
-                f"Invalid tar ball links (not in {self.config.ARCHIVE}):"
-            ),
-            "incorrect_tb_dir_links": DictOfList(
-                "Incorrectly constructed tar ball links:"
-            ),
-            "invalid_tb_dir_links": DictOfList(
-                "Tar ball links to invalid incoming location:"
-            ),
-            "unused_prefix_files": DictOfList(
-                "Tar ball links with unused prefix files:"
-            ),
-            "missing_prefix_files": DictOfList(
-                "Tar ball links with missing prefix files:"
-            ),
-            "bad_prefix_files": DictOfList("Tar ball links with bad prefix files:"),
-            "bad_prefixes": DictOfList("Tar ball links with bad prefixes:"),
-            "unexpected_user_links": DictOfList(
-                "Tar ball links not configured for this user:"
-            ),
-            "wrong_user_links": DictOfList("Tar ball links for the wrong user:"),
-        }
-
-    def add_controller(self, controller):
-        self.controllers.append(controller)
-
-    def add_tarball_dirs(self, val, controller, tbdir):
-        """Gather values for each results_check dict key"""
-        self.results_check[val][controller] = tbdir
-
-    def check_controller_in_results(self):
-        for controller in sorted(self.controllers):
-            if self.check_controller_in_list(controller, self.results_check):
+            if self.check_controller_in_list(controller):
                 return True
         return False
 
     def dump(self, fp):
         """Validates and Output collected data"""
-        return self._dump(fp, self.results_check)
+        cnt = 0
+        for controller in sorted(self.controllers):
+            if self.check_controller_in_list(controller):
+                fp.write(f"\n{self.name.title()} issues for controller: {controller}\n")
+                for key in self.validation_list:
+                    cnt = self.dump_check(fp, controller, key, cnt)
+
+        return cnt
+
+
+class IncomingHierarchy(Hierarchy, IRHierarchy):
+    def __init__(self, name, path, config):
+        super().__init__(name, path, config)
+
+        self.validation_list = {
+            self.INVALID_TB_DIRS: DictOfList(
+                f"Invalid tar ball directories (not in {self.config.ARCHIVE}):"
+            ),
+            self.EMPTY_TARBALL_DIRS: DictOfList("Empty tar ball directories:"),
+            self.INVALID_UNPACKING_DIRS: DictOfList(
+                "Invalid unpacking directories (missing tar ball):"
+            ),
+            self.TARBALL_LINKS: DictOfList("Invalid tar ball links:"),
+        }
+
+
+class ResultsHierarchy(Hierarchy, IRHierarchy):
+    def __init__(self, name, path, config):
+        super().__init__(name, path, config)
+
+        self.validation_list = {
+            self.EMPTY_TARBALL_DIRS: DictOfList("Empty tar ball directories:"),
+            self.INVALID_TB_LINKS: DictOfList(
+                f"Invalid tar ball links (not in {self.config.ARCHIVE}):"
+            ),
+            self.INCORRECT_TB_DIR_LINKS: DictOfList(
+                "Incorrectly constructed tar ball links:"
+            ),
+            self.INVALID_TB_DIR_LINKS: DictOfList(
+                "Tar ball links to invalid incoming location:"
+            ),
+            self.UNUSED_PREFIX_FILES: DictOfList(
+                "Tar ball links with unused prefix files:"
+            ),
+            self.MISSING_PREFIX_FILES: DictOfList(
+                "Tar ball links with missing prefix files:"
+            ),
+            self.BAD_PREFIX_FILES: DictOfList("Tar ball links with bad prefix files:"),
+            self.BAD_PREFIXES: DictOfList("Tar ball links with bad prefixes:"),
+            self.UNEXPECTED_USER_LINKS: DictOfList(
+                "Tar ball links not configured for this user:"
+            ),
+            self.WRONG_USER_LINKS: DictOfList("Tar ball links for the wrong user:"),
+        }
 
 
 class UserHierarchy(Hierarchy):
     def __init__(self, name, path, config):
         super().__init__(name, path, config)
 
-        self.user_dir = list()
-        self.unexpected_objects = list()
+        self.USER_DIR = list()
+        self.UNEXPECTED_OBJECTS = list()
 
     def add_unexpected_objects(self, user):
-        self.unexpected_objects.append(user)
+        self.UNEXPECTED_OBJECTS.append(user)
 
     def add_user_dir(self, user):
-        self.user_dir.append(user)
+        self.USER_DIR.append(user)
 
-    def check_controller_in_users(self):
-        if self.unexpected_objects:
-            return True
-        return False
+    def check_controller(self):
+        return self.UNEXPECTED_OBJECTS
 
     def dump(self, fp):
         """Validates and Output Collected data"""
         cnt = 0
         fp.write("\nUnexpected files found:\n")
-        for controller in sorted(self.unexpected_objects):
-            fp.write(f"\t{controller}\n")
+        for controller in sorted(self.UNEXPECTED_OBJECTS):
+            fp.write(f"\t{os.path.basename(controller)}\n")
         cnt = cnt + 1
 
         return cnt
