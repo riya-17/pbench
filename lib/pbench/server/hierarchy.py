@@ -398,7 +398,7 @@ class UserHierarchy(Hierarchy):
         cnt = 0
         fp.write("\nUnexpected files found:\n")
         for controller in sorted(self.UNEXPECTED_OBJECTS):
-            fp.write(f"\t{os.path.basename(controller)}\n")
+            fp.write(f"\t{controller}\n")
         cnt = cnt + 1
 
         return cnt
