@@ -4,6 +4,7 @@
 import os
 import time
 
+from pathlib import Path
 from collections import OrderedDict
 
 
@@ -324,7 +325,7 @@ class IRHierarchy(object):
         cnt = 0
         for controller in sorted(self.controllers):
             if self.check_controller_in_list(controller):
-                fp.write(f"\n{self.name.title()} issues for controller: {controller}\n")
+                fp.write(f"\n{self.name} issues for controller: {controller}\n")
                 for key in self.validation_list:
                     cnt = self.dump_check(fp, controller, key, cnt)
 
@@ -348,9 +349,10 @@ class IncomingHierarchy(Hierarchy, IRHierarchy):
 
 
 class ResultsHierarchy(Hierarchy, IRHierarchy):
-    def __init__(self, name, path, config):
+    def __init__(self, name, path, config, global_results=False):
         super().__init__(name, path, config)
 
+        self.global_results = global_results
         self.validation_list = {
             self.EMPTY_TARBALL_DIRS: DictOfList("Empty tar ball directories:"),
             self.INVALID_TB_LINKS: DictOfList(
@@ -376,29 +378,60 @@ class ResultsHierarchy(Hierarchy, IRHierarchy):
             self.WRONG_USER_LINKS: DictOfList("Tar ball links for the wrong user:"),
         }
 
+    def dump(self, fp):
+        """Validates and Output collected data"""
+        cnt = 0
+        for controller in sorted(self.controllers):
+            if self.check_controller_in_list(controller):
+                if self.global_results:
+                    fp.write(
+                        f"\nResults issues for controller: {self.name}/{controller}\n"
+                    )
+                else:
+                    fp.write(f"\n{self.name} issues for controller: {controller}\n")
+                for key in self.validation_list:
+                    cnt = self.dump_check(fp, controller, key, cnt)
+
+        return cnt
+
 
 class UserHierarchy(Hierarchy):
     def __init__(self, name, path, config):
         super().__init__(name, path, config)
 
-        self.USER_DIR = list()
-        self.UNEXPECTED_OBJECTS = list()
+        self.users = list()
+        self.unexpected_objects = list()
+        # To check availability of controllers in another hierarchy
+        self.check = False
 
     def add_unexpected_objects(self, user):
-        self.UNEXPECTED_OBJECTS.append(user)
+        self.unexpected_objects.append(user)
 
     def add_user_dir(self, user):
-        self.USER_DIR.append(user)
+        self.users.append(
+            ResultsHierarchy(
+                user.name, Path(self.config.USERS, user), self.config, True
+            )
+        )
 
     def check_controller(self):
-        return self.UNEXPECTED_OBJECTS
+        for user in self.users:
+            if user.check_controller():
+                self.check = True
+                break
+        return self.unexpected_objects or self.check
 
     def dump(self, fp):
         """Validates and Output Collected data"""
         cnt = 0
-        fp.write("\nUnexpected files found:\n")
-        for controller in sorted(self.UNEXPECTED_OBJECTS):
-            fp.write(f"\t{controller}\n")
-        cnt = cnt + 1
+        if self.unexpected_objects:
+            fp.write("\nUnexpected files found:\n")
+            for controller in sorted(self.unexpected_objects):
+                fp.write(f"\t{controller}\n")
+            cnt = cnt + 1
+
+        if self.check:
+            for user in self.users:
+                cnt += user.dump(fp)
 
         return cnt

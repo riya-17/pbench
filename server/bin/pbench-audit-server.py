@@ -155,7 +155,7 @@ def verify_archive(hier):
                 print(
                     f"{item_path} item should have been handled by the above mentioned conditions. "
                     f"It is an unexpected item which should not have occured, "
-                    f"leading to an inappropriate condition"
+                    f"leading to an inappropriate condition like a hidden directory."
                 )
         verify_subdirs(hier, controller, controller_subdir)
         verify_prefixes(hier, controller)
@@ -247,53 +247,54 @@ def verify_incoming(ihier, verifylist):
 
 
 # Results Hierarchy
-def verify_user_arg(rhier, mdlogcfg, user_arg, user_controller, path):
-    """fetch user from the config file and verifies its validity"""
-    user = ""
-    try:
-        user = mdlogcfg.get("run", "user")
-    except NoSectionError:
-        pass
-    except NoOptionError:
-        pass
-    if not user:
-        """No user in the metadata.log of the tar ball, but
-        we are examining a link in the user tree that
-        does not have a configured user, report it.
+def verify_user_arg(rhier, mdlogcfg, controller, path):
+    """fetch user from the config file and verify its validity"""
+
+    if rhier.path.parent == rhier.config.USERS:
+        """We are reviewing a user tree, so check the user in
+        the configuration.  Version 002 agents use the
+        metadata log to store a user as well.
         """
-        rhier.add_unexpected_controllers(
-            Hierarchy.UNEXPECTED_USER_LINKS, user_controller, path
-        )
-    elif user_arg != user:
-        """Configured user does not match the user tree in
-        which we found the link."""
-        rhier.add_unexpected_controllers(
-            Hierarchy.WRONG_USER_LINKS, user_controller, path
-        )
+        user_arg = rhier.path.name
+        user = ""
+        try:
+            user = mdlogcfg.get("run", "user")
+        except NoSectionError:
+            pass
+        except NoOptionError:
+            pass
+        if not user:
+            """No user in the metadata.log of the tar ball, but
+            we are examining a link in the user tree that
+            does not have a configured user, report it.
+            """
+            rhier.add_unexpected_controllers(
+                Hierarchy.UNEXPECTED_USER_LINKS, controller, path
+            )
+        elif user_arg != user:
+            """Configured user does not match the user tree in
+            which we found the link."""
+            rhier.add_unexpected_controllers(
+                Hierarchy.WRONG_USER_LINKS, controller, path
+            )
 
     return 0
 
 
-def list_direct_entries(results_hierarchy, controller):
+def list_direct_entries(hierarchy, controller):
 
     direct_entries = list()
-    for root, dirs, files in os.walk(Path(results_hierarchy, controller), topdown=True):
+    for root, dirs, files in os.walk(Path(hierarchy, controller), topdown=True):
         for name in files:
-            direct_entries.append(os.path.join(root, name))
+            direct_entries.append(Path(root, name))
         for name in dirs:
-            direct_entries.append(os.path.join(root, name))
+            direct_entries.append(Path(root, name))
 
     return direct_entries
 
 
-def verify_results(rhier, verifylist, user_arg):
-    """'rhier' is ResultsHierarchy class. user_arg consists of
-    users which gets passed from user hierarchy.
-    """
-    if user_arg:
-        results_hierarchy = Path(rhier.config.USERS, user_arg)
-    else:
-        results_hierarchy = Path(rhier.path)
+def verify_results(rhier, verifylist):
+    """'rhier' is ResultsHierarchy class. """
 
     for controller in verifylist:
         if not Path(rhier.config.ARCHIVE, controller).is_dir():
@@ -302,28 +303,17 @@ def verify_results(rhier, verifylist, user_arg):
             """
             continue
 
-        direct_entries = list_direct_entries(results_hierarchy, controller)
+        direct_entries = list_direct_entries(rhier.path, controller)
+        rhier.add_controller(controller)
 
-        if user_arg:
-            user_controller = f"{user_arg}/{controller}"
-            rhier.add_controller(user_controller)
-        else:
-            rhier.add_controller(controller)
-
-        for dirent in direct_entries:
-            path = Path(dirent.split(os.path.join(controller, ""), 1)[1])
-            dir_path = Path(dirent)
+        for dir_path in direct_entries:
+            path = Path(str(dir_path).split(os.path.join(controller, ""), 1)[1])
             if dir_path.is_dir() and len(os.listdir(dir_path)) == 0:
-                if user_arg:
-                    rhier.add_unexpected_controllers(
-                        Hierarchy.EMPTY_TARBALL_DIRS, user_controller, path
-                    )
-                else:
-                    rhier.add_unexpected_controllers(
-                        Hierarchy.EMPTY_TARBALL_DIRS, controller, path
-                    )
+                rhier.add_unexpected_controllers(
+                    Hierarchy.EMPTY_TARBALL_DIRS, controller, path
+                )
             elif dir_path.is_symlink():
-                link = os.path.realpath(dirent)
+                link = os.path.realpath(str(dir_path))
                 tb = f"{path.name}.tar.xz"
                 incoming_path = Path(rhier.config.INCOMING, controller, dir_path.name)
                 if not Path(rhier.config.ARCHIVE, controller, tb).exists():
@@ -390,24 +380,13 @@ def verify_results(rhier, verifylist, user_arg):
                                         rhier.add_unexpected_controllers(
                                             Hierarchy.BAD_PREFIXES, controller, path
                                         )
-                        if user_arg:
-                            """We are reviewing a user tree, so check the user in
-                            the configuration.  Version 002 agents use the
-                            metadata log to store a user as well.
-                            """
-                            verify_user_arg(
-                                rhier, mdlogcfg, user_arg, user_controller, path
-                            )
-
+                        verify_user_arg(rhier, mdlogcfg, controller, path)
     return 0
 
 
 # Controller Hierarchy
 def verify_controllers(hier):
-    """'ihier' is either IncomingHierarchy class object or ResultsHierarchy
-    class object based on the instance it is called and hier is a
-    ControllerHierarchy class object. user_arg is the user of Users hierarchy
-    """
+    """ 'hier' is a ControllerHierarchy class object. """
     controllers = glob.iglob(os.path.join(hier.path, "*"))
     verify_valid_controllers(hier, controllers)
 
@@ -447,26 +426,8 @@ def verify_controllers(hier):
 
 
 # User Hierarchy
-
-
-def expected_unexpected_users(hier, user_dirs):
-    """Find all the non-directory files at the same level of the controller
-    directories and report them, and find all the normal controller directories.
-    """
-    for user in user_dirs:
-        user_path = Path(user)
-        if user_path.is_dir():
-            hier.add_user_dir(user_path.name)
-        else:
-            hier.add_unexpected_objects(user_path.name)
-    return 0
-
-
 def verify_users(hier):
-    """'rhier' is the ResultsHierarchy class object,
-    'chier' is ControllerHierarchy class object and
-    'hier' is UserHierarchy class object.
-    """
+    """ 'hier' is UserHierarchy class object."""
     if not Path(hier.path).is_dir():
         print(
             "The setting for USERS in the config file is {}, but that is"
@@ -475,8 +436,14 @@ def verify_users(hier):
         )
         return 1
 
-    users_dirs = glob.iglob(os.path.join(hier.path, "*"))
-    expected_unexpected_users(hier, users_dirs)
+    user_dirs = glob.iglob(os.path.join(hier.path, "*"))
+
+    for user in user_dirs:
+        user_path = Path(user)
+        if user_path.is_dir():
+            hier.add_user_dir(user_path)
+        else:
+            hier.add_unexpected_objects(user_path.name)
 
     return 0
 
@@ -496,10 +463,8 @@ def check_and_dump(f, hier, ihier):
     return cnt
 
 
-def check_func(pbdir_path, pbdirname):
-    """check function deals with handling the integrity of
-    ARCHIVE, INCOMING, RESULTS and USERS hierarchy
-    """
+def check_directory_exists(pbdir_path, pbdirname):
+    """ checks the existence of directories """
     pbdir = pbdir_path
     try:
         pbdir_p = Path(pbdir).resolve(strict=True)
@@ -530,16 +495,16 @@ def main():
         print("{}: {} (config file {})".format(_NAME_, e, cfg_name), file=sys.stderr)
         return 1
 
-    if check_func(config.ARCHIVE, "ARCHIVE") > 0:
+    if check_directory_exists(config.ARCHIVE, "ARCHIVE") > 0:
         return 1
 
-    if check_func(config.INCOMING, "INCOMING") > 0:
+    if check_directory_exists(config.INCOMING, "INCOMING") > 0:
         return 1
 
-    if check_func(config.RESULTS, "RESULTS") > 0:
+    if check_directory_exists(config.RESULTS, "RESULTS") > 0:
         return 1
 
-    if check_func(config.USERS, "USERS") > 0:
+    if check_directory_exists(config.USERS, "USERS") > 0:
         return 1
 
     logger = get_pbench_logger(_NAME_, config)
@@ -575,7 +540,7 @@ def main():
         if cnt > 0:
             ret += 1
 
-        ihier = IncomingHierarchy("incoming", config.INCOMING, config)
+        ihier = IncomingHierarchy("Incoming", config.INCOMING, config)
         cihier = ControllerHierarchy("incoming", config.INCOMING, config)
         verify_controllers(cihier)
         verify_incoming(ihier, cihier.verifylist)
@@ -583,21 +548,24 @@ def main():
         if cnt > 0:
             ret += 1
 
-        rhier = ResultsHierarchy("results", config.RESULTS, config)
+        rhier = ResultsHierarchy("Results", config.RESULTS, config)
         crhier = ControllerHierarchy("results", config.RESULTS, config)
         verify_controllers(crhier)
-        verify_results(rhier, crhier.verifylist, None)
+        verify_results(rhier, crhier.verifylist)
         cnt = check_and_dump(f, crhier, rhier)
         if cnt > 0:
             ret += 1
 
-        ruhier = ResultsHierarchy("results", config.USERS, config)
         uhier = UserHierarchy("users", config.USERS, config)
         verify_users(uhier)
-        if uhier.USER_DIR:
-            for user in uhier.USER_DIR:
-                verify_results(ruhier, crhier.verifylist, user)
-        cnt = check_and_dump(f, uhier, ruhier)
+        if uhier.users:
+            for user in uhier.users:
+                verify_results(user, crhier.verifylist)
+        cnt = 0
+        if uhier.check_controller():
+            uhier.header(f, "start")
+            cnt = uhier.dump(f)
+            uhier.header(f, "end")
         if cnt > 0:
             ret += 1
 
