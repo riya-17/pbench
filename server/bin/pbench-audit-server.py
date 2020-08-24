@@ -41,12 +41,11 @@ def verify_valid_controllers(hier, controllers):
     """Find all the non-directory files at the same level of the controller
     directories and report them, and find all the normal controller directories.
     """
-    for controller in controllers:
-        controller_path = Path(controller)
+    for controller_path in controllers:
         if controller_path.is_dir():
             hier.add_controller(controller_path.name)
         else:
-            hier.add_bad_controller(controller)
+            hier.add_bad_controller(controller_path)
     return 0
 
 
@@ -84,10 +83,9 @@ def verify_prefixes(hier, controller):
         )
         return 1
 
-    prefixes = glob.iglob(os.path.join(str(prefix_dir), "*"))
+    prefixes = prefix_dir.glob("*")
 
-    for prefix in prefixes:
-        prefix_path = Path(prefix)
+    for prefix_path in prefixes:
         if not prefix_path.name.startswith("prefix.") and not prefix_path.name.endswith(
             ".prefix"
         ):
@@ -105,16 +103,15 @@ def verify_prefixes(hier, controller):
 # 'hier' is an object of ArchiveHierarchy class imported from hierarchy.py
 def verify_archive(hier):
 
-    controllers = glob.iglob(os.path.join(hier.path, "*"))
+    controllers = Path(hier.path).glob("*")
     verify_valid_controllers(hier, controllers)
 
     # now check each "good" controller and get the tarballs it contains
     for controller in hier.controllers:
         direct_entries = glob.iglob(os.path.join(hier.path, controller, "*"))
-        hidden_entries = glob.glob(os.path.join(hier.path, controller, ".*"))
+        hidden_entries = Path(hier.path, controller).glob(".*")
         if hidden_entries:
-            for hid_entries in hidden_entries:
-                hid_entries_path = Path(hid_entries)
+            for hid_entries_path in hidden_entries:
                 if hid_entries_path.is_file():
                     hier.add_unexpected_controllers(
                         Hierarchy.UNEXPECTED_OBJECTS, controller, hid_entries_path.name,
@@ -183,7 +180,7 @@ def verify_tar_dirs(ihier, tarball_dirs, tblist, controller):
                 except Exception:
                     pass
         else:
-            tblist(val, controller, Path(tb).name)
+            tblist(val, controller, tb)
     return 0
 
 
@@ -192,9 +189,7 @@ def verify_incoming(ihier, verifylist):
 
     for controller in verifylist:
         ihier.add_controller(controller)
-        direct_entries = glob.iglob(
-            os.path.join(ihier.config.INCOMING, controller, "*")
-        )
+        direct_entries = Path(ihier.config.INCOMING, controller).glob("*")
         tarball_dirs = list()
         unpacking_tarball_dirs = list()
 
@@ -203,8 +198,7 @@ def verify_incoming(ihier, verifylist):
             # directory, handled in another part of the audit.
             continue
 
-        for dirent in direct_entries:
-            dir_path = Path(dirent)
+        for dir_path in direct_entries:
             if (
                 dir_path.is_dir()
                 and not dir_path.name.endswith(".unpack")
@@ -281,6 +275,14 @@ def verify_user_arg(rhier, mdlogcfg, controller, path):
     return 0
 
 
+def path_below_controller(dir_path, controller):
+
+    controller_path = os.path.join(controller, "")
+    path = dir_path.split(controller_path, 1)[1]
+
+    return Path(path)
+
+
 def list_direct_entries(hierarchy, controller):
 
     direct_entries = list()
@@ -307,7 +309,7 @@ def verify_results(rhier, verifylist):
         rhier.add_controller(controller)
 
         for dir_path in direct_entries:
-            path = Path(str(dir_path).split(os.path.join(controller, ""), 1)[1])
+            path = path_below_controller(str(dir_path), controller)
             if dir_path.is_dir() and len(os.listdir(dir_path)) == 0:
                 rhier.add_unexpected_controllers(
                     Hierarchy.EMPTY_TARBALL_DIRS, controller, path
@@ -330,7 +332,7 @@ def verify_results(rhier, verifylist):
                             Hierarchy.INVALID_TB_DIR_LINKS, controller, dir_path.name
                         )
                     else:
-                        prefix_path = os.path.dirname(str(path))
+                        prefix_path = str(path.parent)
                         prefix_file = Path(
                             rhier.config.ARCHIVE, controller, ".prefix", dir_path.name
                         )
@@ -345,7 +347,7 @@ def verify_results(rhier, verifylist):
                             pass
                         except NoOptionError:
                             pass
-                        if prefix_path == "":
+                        if prefix_path == ".":
                             if prefix:
                                 rhier.add_unexpected_controllers(
                                     Hierarchy.BAD_PREFIXES, controller, path
@@ -356,7 +358,7 @@ def verify_results(rhier, verifylist):
                                 )
                         else:
                             if prefix:
-                                if prefix != str(prefix_path):
+                                if prefix != prefix_path:
                                     rhier.add_unexpected_controllers(
                                         Hierarchy.BAD_PREFIXES, controller, path
                                     )
@@ -387,7 +389,7 @@ def verify_results(rhier, verifylist):
 # Controller Hierarchy
 def verify_controllers(hier):
     """ 'hier' is a ControllerHierarchy class object. """
-    controllers = glob.iglob(os.path.join(hier.path, "*"))
+    controllers = Path(hier.path).glob("*")
     verify_valid_controllers(hier, controllers)
 
     if hier.controllers:
@@ -408,11 +410,8 @@ def verify_controllers(hier):
                     hier.add_controller_list(Hierarchy.EMPTY_CONTROLLERS, controller)
                     continue
                 else:
-                    direct_entries = glob.iglob(
-                        os.path.join(hier.path, controller, "*")
-                    )
-                    for item in direct_entries:
-                        item_path = Path(item)
+                    direct_entries = Path(hier.path, controller).glob("*")
+                    for item_path in direct_entries:
                         if not item_path.is_dir() and not item_path.is_symlink():
                             unexpected_dirs.append(controller)
 
@@ -430,16 +429,14 @@ def verify_users(hier):
     """ 'hier' is UserHierarchy class object."""
     if not Path(hier.path).is_dir():
         print(
-            "The setting for USERS in the config file is {}, but that is"
-            " not a directory",
-            hier.path,
+            f"The setting for USERS in the config file is {hier.path}, but that is"
+            f" not a directory"
         )
         return 1
 
-    user_dirs = glob.iglob(os.path.join(hier.path, "*"))
+    user_dirs = Path(hier.path).glob("*")
 
-    for user in user_dirs:
-        user_path = Path(user)
+    for user_path in user_dirs:
         if user_path.is_dir():
             hier.add_user_dir(user_path)
         else:
@@ -465,9 +462,9 @@ def check_and_dump(f, hier, ihier):
 
 def check_directory_exists(pbdir_path, pbdirname):
     """ checks the existence of directories """
-    pbdir = pbdir_path
+    pbdir = Path(pbdir_path)
     try:
-        pbdir_p = Path(pbdir).resolve(strict=True)
+        pbdir_p = pbdir.resolve(strict=True)
     except FileNotFoundError:
         print(f"{_NAME_}: Bad {pbdirname}={pbdir}", file=sys.stderr)
         return 1
@@ -483,8 +480,7 @@ def main():
     cfg_name = os.environ.get("_PBENCH_SERVER_CONFIG")
     if not cfg_name:
         print(
-            "{}: ERROR: No config file specified; set CONFIG env variable or"
-            " use --config <file> on the command line".format(_NAME_),
+            f"{_NAME_}: ERROR: No config file specified; set CONFIG env variable",
             file=sys.stderr,
         )
         return 2
@@ -492,7 +488,7 @@ def main():
     try:
         config = PbenchServerConfig(cfg_name)
     except BadConfig as e:
-        print("{}: {} (config file {})".format(_NAME_, e, cfg_name), file=sys.stderr)
+        print(f"{_NAME_}: {e} (config file {cfg_name})", file=sys.stderr)
         return 1
 
     if check_directory_exists(config.ARCHIVE, "ARCHIVE") > 0:

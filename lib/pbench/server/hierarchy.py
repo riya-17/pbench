@@ -263,8 +263,7 @@ class ArchiveHierarchy(Hierarchy):
             mTime = time.strftime(
                 "%a %b %d %H:%M:%S.0000000000 %Y", time.gmtime(contStatOb.st_mtime)
             )
-            bname = os.path.basename(controller)
-            fp.write(f"\t-{fperm}          0 {mTime} {bname}\n")
+            fp.write(f"\t-{fperm}          0 {mTime} {controller.name}\n")
         return
 
 
@@ -302,7 +301,7 @@ class ControllerHierarchy(Hierarchy):
         if self.bad_controllers:
             fp.write("\nUnexpected files found:\n")
             for controller in sorted(self.bad_controllers):
-                fp.write(f"\t{os.path.basename(controller)}\n")
+                fp.write(f"\t{controller.name}\n")
             cnt = cnt + 1
         for val in self.validation_list:
             if self.validation_list[val].getlist():
