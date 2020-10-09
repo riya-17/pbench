@@ -149,11 +149,7 @@ def verify_archive(hier):
             ):
                 hier.add_tarballs(controller)
             else:
-                print(
-                    f"{item_path} item should have been handled by the above mentioned conditions. "
-                    f"It is an unexpected item which should not have occured, "
-                    f"leading to an inappropriate condition like a hidden directory."
-                )
+                print(f"Add it as impossible in dictionary")
         verify_subdirs(hier, controller, controller_subdir)
         verify_prefixes(hier, controller)
 
@@ -172,13 +168,8 @@ def verify_tar_dirs(ihier, tarball_dirs, tblist, controller):
             val = Hierarchy.INVALID_TB_DIRS
         tarfile = Path(ihier.config.ARCHIVE, controller, tar)
         if tarfile.exists():
-            with tarfile.open(mode="r") as f:
-                try:
-                    file_content = f.read(1)
-                    if file_content:
-                        continue
-                except Exception:
-                    pass
+            if os.access(tarfile, os.R_OK):
+                continue
         else:
             tblist(val, controller, tb)
     return 0
@@ -189,40 +180,36 @@ def verify_incoming(ihier, verifylist):
 
     for controller in verifylist:
         ihier.add_controller(controller)
-        direct_entries = Path(ihier.config.INCOMING, controller).glob("*")
-        tarball_dirs = list()
-        unpacking_tarball_dirs = list()
 
         if not Path(ihier.config.ARCHIVE, controller).is_dir():
             # Skip incoming controller directories that don't have an $ARCHIVE
             # directory, handled in another part of the audit.
             continue
 
+        direct_entries = Path(ihier.config.INCOMING, controller).glob("*")
+        tarball_dirs = list()
+        unpacking_tarball_dirs = list()
+
         for dir_path in direct_entries:
-            if (
-                dir_path.is_dir()
-                and not dir_path.name.endswith(".unpack")
-                and not len(os.listdir(dir_path)) == 0
-            ):
-                tarball_dirs.append(dir_path.name)
-            elif (
-                dir_path.is_dir()
-                and not dir_path.name.endswith(".unpack")
-                and len(os.listdir(dir_path)) == 0
-            ):
-                ihier.add_unexpected_controllers(
-                    Hierarchy.EMPTY_TARBALL_DIRS, controller, dir_path.name
-                )
-            elif (
-                dir_path.is_dir()
-                and dir_path.name.endswith(".unpack")
-                and len(os.listdir(dir_path)) == 0
-            ):
-                unpacking_tarball_dirs.append(dir_path.name)
+            if dir_path.is_dir():
+                if dir_path.name.endswith(".unpack"):
+                    if len(os.listdir(dir_path)) == 0:
+                        unpacking_tarball_dirs.append(dir_path.name)
+                    else:
+                        print("condition did not exist earlier")
+                elif not dir_path.name.endswith(".unpack"):
+                    if len(os.listdir(dir_path)) == 0:
+                        ihier.add_unexpected_controllers(
+                            Hierarchy.EMPTY_TARBALL_DIRS, controller, dir_path.name
+                        )
+                    else:
+                        tarball_dirs.append(dir_path.name)
             elif dir_path.is_symlink():
                 ihier.add_unexpected_controllers(
                     Hierarchy.TARBALL_LINKS, controller, dir_path.name
                 )
+            else:
+                print("IMPOSSIBLE =========== ", controller)
 
         if tarball_dirs:
             verify_tar_dirs(
@@ -276,7 +263,7 @@ def verify_user_arg(rhier, mdlogcfg, controller, path):
 
 
 def path_below_controller(dir_path, controller):
-
+    # FIXME: other possible ways to do this
     controller_path = os.path.join(controller, "")
     path = dir_path.split(controller_path, 1)[1]
 
@@ -392,34 +379,33 @@ def verify_controllers(hier):
     controllers = Path(hier.path).glob("*")
     verify_valid_controllers(hier, controllers)
 
-    if hier.controllers:
-        for controller in hier.controllers:
-            dir_path = Path(hier.path, controller)
-            unexpected_dirs = list()
-            if not Path(hier.config.ARCHIVE, controller).is_dir():
-                """We have a controller in the hierarchy which does not have a
-                controller of the same name in the archive hierarchy.  All
-                we do is report it, don't bother analyzing it further.
-                """
-                hier.add_controller_list(Hierarchy.MIALIST, Path(controller).name)
+    for controller in hier.controllers:
+        dir_path = Path(hier.path, controller)
+        unexpected_dirs = list()
+        if not Path(hier.config.ARCHIVE, controller).is_dir():
+            """We have a controller in the hierarchy which does not have a
+            controller of the same name in the archive hierarchy.  All
+            we do is report it, don't bother analyzing it further.
+            """
+            hier.add_controller_list(Hierarchy.MIALIST, Path(controller).name)
+        else:
+            """Report any controllers with objects other than directories
+            and links, while also recording any empty controllers.
+            """
+            count_dir_entries = 0
+            direct_entries = dir_path.glob("*")
+            for item_path in direct_entries:
+                count_dir_entries += 1
+                if not item_path.is_dir() and not item_path.is_symlink():
+                    unexpected_dirs.append(controller)
             else:
-                """Report any controllers with objects other than directories
-                and links, while also recording any empty controllers.
-                """
-                if len(os.listdir(dir_path)) == 0:
+                if count_dir_entries == 0:
                     hier.add_controller_list(Hierarchy.EMPTY_CONTROLLERS, controller)
                     continue
-                else:
-                    direct_entries = Path(hier.path, controller).glob("*")
-                    for item_path in direct_entries:
-                        if not item_path.is_dir() and not item_path.is_symlink():
-                            unexpected_dirs.append(controller)
 
-                if unexpected_dirs:
-                    hier.add_controller_list(
-                        Hierarchy.UNEXPECTED_CONTROLLERS, controller
-                    )
-                hier.add_verify_list(controller)
+            if unexpected_dirs:
+                hier.add_controller_list(Hierarchy.UNEXPECTED_CONTROLLERS, controller)
+            hier.add_verify_list(controller)
 
     return 0
 
