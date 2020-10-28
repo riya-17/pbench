@@ -125,7 +125,7 @@ def verify_archive(hier):
                 try:
                     item_p = item_path.resolve(strict=True)
                 except FileNotFoundError:
-                    hier.add_error_or_impossible_entries(
+                    hier.add_error_or_inconceivable_entries(
                         Hierarchy.ERROR,
                         controller,
                         f"{item_path.name}_path, '{item_path}', does not resolve to a real location",
@@ -150,8 +150,8 @@ def verify_archive(hier):
             ):
                 hier.add_tarballs(controller)
             else:
-                hier.add_error_or_impossible_entries(
-                    Hierarchy.IMPOSSIBLE, controller, item_path.name,
+                hier.add_error_or_inconceivable_entries(
+                    Hierarchy.INCONCEIVABLE, controller, item_path.name,
                 )
         verify_subdirs(hier, controller, controller_subdir)
         verify_prefixes(hier, controller)
@@ -199,8 +199,8 @@ def verify_incoming(ihier, verifylist):
                     if len(os.listdir(dir_path)) == 0:
                         unpacking_tarball_dirs.append(dir_path.name)
                     else:
-                        print("condition did not exist earlier")
-                elif not dir_path.name.endswith(".unpack"):
+                        tarball_dirs.append(dir_path.name)
+                else:
                     if len(os.listdir(dir_path)) == 0:
                         ihier.add_unexpected_entries(
                             Hierarchy.EMPTY_TARBALL_DIRS, controller, dir_path.name
@@ -212,8 +212,8 @@ def verify_incoming(ihier, verifylist):
                     Hierarchy.TARBALL_LINKS, controller, dir_path.name
                 )
             else:
-                ihier.add_error_or_impossible_entries(
-                    Hierarchy.IMPOSSIBLE, controller, dir_path.name,
+                ihier.add_error_or_inconceivable_entries(
+                    Hierarchy.INCONCEIVABLE, controller, dir_path.name,
                 )
 
         if tarball_dirs:
@@ -400,6 +400,7 @@ def verify_controllers(hier):
                 count_dir_entries += 1
                 if not item_path.is_dir() and not item_path.is_symlink():
                     unexpected_dirs.append(controller)
+                    break
             else:
                 if count_dir_entries == 0:
                     hier.add_controller_list(Hierarchy.EMPTY_CONTROLLERS, controller)

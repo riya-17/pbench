@@ -62,7 +62,7 @@ class Hierarchy(object):
     BAD_PREFIXES = "bad_prefixes"
     UNEXPECTED_USER_LINKS = "unexpected_user_links"
     WRONG_USER_LINKS = "wrong_user_links"
-    IMPOSSIBLE = "impossible"
+    INCONCEIVABLE = "inconceivable"
     ERROR = "error"
 
     def __init__(self, name, path, config):
@@ -79,7 +79,7 @@ class Hierarchy(object):
     def add_bad_controller(self, controller):
         self.bad_controllers.append(controller)
 
-    def add_error_or_impossible_entries(self, val, controller, dirs):
+    def add_error_or_inconceivable_entries(self, val, controller, dirs):
         self.validation_list[val][controller] = dirs
 
     def add_unexpected_entries(self, val, controller, dirs):
@@ -225,7 +225,7 @@ class ArchiveHierarchy(Hierarchy):
                 "Prefix directory, .prefix, is not a directory!"
             ),
             self.ERROR: DictOfList("ERROR:"),
-            self.IMPOSSIBLE: DictOfList("Impossible Conditions:"),
+            self.INCONCEIVABLE: DictOfList("Inconceivable Conditions:"),
         }
 
     def add_tarballs(self, controller):
@@ -351,7 +351,7 @@ class IncomingHierarchy(Hierarchy, IRHierarchy):
                 "Invalid unpacking directories (missing tar ball):"
             ),
             self.TARBALL_LINKS: DictOfList("Invalid tar ball links:"),
-            self.IMPOSSIBLE: DictOfList("Impossible Conditions:"),
+            self.INCONCEIVABLE: DictOfList("Inconceivable Conditions:"),
         }
 
 
